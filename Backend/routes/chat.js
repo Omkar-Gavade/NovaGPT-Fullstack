@@ -1,6 +1,8 @@
 import express from "express";
 import Thread from "../models/Thread.js"
 import { generateGeminiReply } from "../utils/gemini.js";
+
+
 const router = express.Router();
 
 //test
@@ -43,7 +45,6 @@ router.get("/thread/:threadId", async(req, res)=>{
             res.status(404).json({error: "Thread not found"});
         }
 
-        res.json(thread.message);
     } catch(err){
         console.log(err);
         res.status(500).json({error: "Failed to fetch chat"});
