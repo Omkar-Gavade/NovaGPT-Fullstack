@@ -95,3 +95,61 @@ input:focus{
     color: #b4b4b4;
 }
 
+/* Droupdown */
+.userIconDiv {
+  position: relative;
+}
+
+/* Dropdown container */
+.dropDown {
+  position: absolute;
+  right: 0;
+  top: 48px;
+  width: 220px;
+  background: #121212;
+  border: 1px solid #2a2a2a;
+  border-radius: 14px;
+  padding: 6px 0;
+  box-shadow:
+    0 20px 40px rgba(0,0,0,0.65),
+    inset 0 1px 0 rgba(255,255,255,0.03);
+  animation: dropdownFade 0.18s ease;
+  z-index: 1000;
+}
+
+.dropDownItem {
+  padding: 12px 16px;
+  font-size: 14px;
+  color: #eaeaea;
+  cursor: pointer;
+}
+
+.dropDownItem:hover {
+  background: #1f1f1f;
+}
+
+.dropDownDivider {
+  height: 1px;
+  background: #2a2a2a;
+  margin: 6px 0;
+}
+
+.dropDownItem.danger {
+  color: #ff6b6b;
+}
+
+.dropDownItem.danger:hover {
+  background: #2a1414;
+}
+
+@keyframes dropdownFade {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
