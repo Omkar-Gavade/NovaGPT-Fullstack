@@ -87,3 +87,106 @@ button:hover{
     background-color: rgba(180, 180, 180, 0.05);
     border-radius: 10px;
 }
+
+/* new */
+/* --- Sidebar container --- */
+.sidebar {
+  width: 270px;
+  height: 100vh;
+  background: rgba(10, 10, 10, 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-right: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 12px;
+  transition: 0.3s ease;
+}
+
+/* --- New chat button --- */
+.sidebar button {
+  background: linear-gradient(145deg, #1a1a1a, #111);
+  border: 1px solid rgba(255,255,255,0.06);
+  color: #eee;
+  padding: 12px 14px;
+  width: 100%;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  font-size: 15px;
+  transition: 0.3s ease;
+}
+
+.sidebar button:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+.logo {
+  width: 26px;
+  height: 26px;
+}
+
+/* --- Thread List --- */
+.history {
+  margin-top: 20px;
+  list-style: none;
+  padding: 0;
+  flex-grow: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #444 transparent;
+}
+.history::-webkit-scrollbar {
+  width: 6px;
+}
+.history::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 5px;
+}
+
+.history li {
+  padding: 12px 14px;
+  margin: 4px 0;
+  background: rgba(255,255,255,0.03);
+  border-radius: 10px;
+  font-size: 14px;
+  color: #ddd;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: 0.25s ease;
+}
+
+.history li:hover {
+  background: rgba(255,255,255,0.08);
+}
+
+/* --- Active thread highlighted --- */
+.history li.highlighted {
+  background: rgba(0,122,255,0.18);
+  border-left: 4px solid #027bff;
+  color: #eaf4ff;
+}
+
+/* --- Delete icon --- */
+.history li i.fa-trash {
+  opacity: 0;
+  color: #ff6b6b;
+  transition: 0.3s ease;
+}
+
+.history li:hover i.fa-trash {
+  opacity: 1;
+}
+
+/* --- Footer Signature --- */
+.sign {
+  margin-top: auto;
+  padding-top: 15px;
+  text-align: center;
+  color: #777;
+  font-size: 13px;
+}

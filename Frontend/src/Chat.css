@@ -32,3 +32,74 @@
 pre{
     white-space: pre-wrap;
 }
+
+/* new */
+.dropDown {
+  position: absolute;
+  right: 0;
+  top: 48px;
+  width: 220px;
+
+  /* ✨ Glassmorphism */
+  background: rgba(25, 25, 25, 0.55);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  padding: 8px 0;
+  box-shadow:
+    0 12px 32px rgba(0,0,0,0.6),
+    inset 0 0 0 0.5px rgba(255,255,255,0.15);
+
+  animation: dropdownFade 0.25s ease-out;
+  z-index: 1000;
+}
+
+/* Each dropdown item */
+.dropDownItem {
+  padding: 12px 18px;
+  font-size: 14px;
+  color: #f2f2f2;
+  cursor: pointer;
+  transition: 0.2s ease;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Smooth hover effect */
+.dropDownItem:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: translateX(4px);
+}
+
+/* Divider */
+.dropDownDivider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 6px 0;
+}
+
+/* Logout (danger) */
+.dropDownItem.danger {
+  color: #ff6b6b;
+}
+
+.dropDownItem.danger:hover {
+  background: rgba(255, 0, 0, 0.1);
+  transform: translateX(4px);
+}
+
+/* Smooth fade animation */
+@keyframes dropdownFade {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
