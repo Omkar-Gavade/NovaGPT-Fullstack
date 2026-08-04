@@ -250,7 +250,7 @@ export class Adapter extends BaseProvider {
     if (options.json || options.jsonSchema) config.responseMimeType = "application/json";
     // Native schema enforcement, which is why these models declare
     // `structuredOutput` and not merely `json`.
-    if (options.jsonSchema?.schema) config.responseSchema = options.jsonSchema.schema;
+    if (options.jsonSchema?.schema) config.responseSchema = toGeminiSchema(options.jsonSchema.schema);
     return config;
   }
 
@@ -489,3 +489,64 @@ function normaliseUsage(metadata) {
     totalTokens: metadata.totalTokenCount ?? null,
   };
 }
+
+/**
+ * A JSON Schema, reduced to the subset Gemini's `responseSchema` accepts.
+ *
+ * **Found during deployment verification.** Gemini takes a restricted OpenAPI
+ * 3.0 schema, not JSON Schema, and rejects the whole request with
+ * `400 INVALID_ARGUMENT` when it meets a keyword it does not know:
+ *
+ *   Unknown name "additionalProperties" at 'generation_config.response_schema'
+ *
+ * `additionalProperties: false` is the single most common keyword in a
+ * structured-output schema — it is what makes the schema a contract — so this
+ * was not an edge case: it broke *every* schema written the obvious way.
+ *
+ * Stripping rather than failing is the right trade, and the reason is the
+ * server-side validator. The keywords removed here are still enforced when the
+ * reply comes back, so `additionalProperties: false` continues to mean what the
+ * caller asked for — Gemini is simply not told about it. The guarantee is
+ * upheld by us instead of by the provider, which is what validating
+ * server-side was for (docs/backend/14-roadmap.md, Phase 9).
+ */
+function toGeminiSchema(schema) {
+  if (Array.isArray(schema)) return schema.map(toGeminiSchema);
+  if (!schema || typeof schema !== "object") return schema;
+
+  const out = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (GEMINI_UNSUPPORTED.has(key)) continue;
+    out[key] = value && typeof value === "object" ? toGeminiSchema(value) : value;
+  }
+  return out;
+}
+
+/**
+ * Keywords Gemini's schema dialect rejects outright.
+ *
+ * Conservative on purpose: a keyword wrongly kept fails the entire request,
+ * while one wrongly stripped only means the model is not told about a
+ * constraint the validator still checks.
+ */
+const GEMINI_UNSUPPORTED = new Set([
+  "additionalProperties",
+  "$schema",
+  "$id",
+  "$ref",
+  "$defs",
+  "definitions",
+  "patternProperties",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "not",
+  "if",
+  "then",
+  "else",
+  "const",
+  "examples",
+  "default",
+  "exclusiveMinimum",
+  "exclusiveMaximum",
+]);

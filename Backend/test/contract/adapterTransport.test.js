@@ -509,6 +509,56 @@ describe("adapter transport — cancellation and empty responses", () => {
     assert.equal(sent.generationConfig.maxOutputTokens, 8192, "clamped to the declared ceiling");
   });
 
+  test("gemini's response schema is reduced to the subset it accepts", async () => {
+    // **Found during deployment verification.** Gemini takes a restricted
+    // OpenAPI 3.0 schema, not JSON Schema, and rejects the entire request with
+    // 400 INVALID_ARGUMENT on an unknown keyword:
+    //
+    //   Unknown name "additionalProperties" at 'generation_config.response_schema'
+    //
+    // `additionalProperties: false` is the keyword that makes a schema a
+    // contract, so this broke *every* schema written the obvious way — not an
+    // edge case. Stripping is safe precisely because the server-side validator
+    // still enforces it on the way back.
+    let sent = null;
+    const adapter = build({
+      module: gemini,
+      fetchImpl: fakeFetch(async ({ init }) => {
+        sent = JSON.parse(init.body);
+        return textResponse(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: '{"a":1}' }] }, finishReason: "STOP" }],
+          }),
+          200
+        );
+      }),
+    });
+
+    await adapter.generate([{ role: "user", content: "x" }], {
+      model: "gemini-2.5-flash",
+      jsonSchema: {
+        name: "response",
+        schema: {
+          type: "object",
+          properties: { a: { type: "integer" }, nested: { type: "object", additionalProperties: false } },
+          required: ["a"],
+          additionalProperties: false,
+          $schema: "http://json-schema.org/draft-07/schema#",
+        },
+      },
+    });
+
+    const schema = sent.generationConfig.responseSchema;
+    assert.equal(schema.additionalProperties, undefined, "the request would have been rejected");
+    assert.equal(schema.$schema, undefined);
+    // Stripped recursively — a nested occurrence fails the request just as hard.
+    assert.equal(schema.properties.nested.additionalProperties, undefined);
+    // And the parts that *are* the schema survive.
+    assert.equal(schema.type, "object");
+    assert.deepEqual(schema.required, ["a"]);
+    assert.equal(schema.properties.a.type, "integer");
+  });
+
   test("a safety block is still api_error, not auth", async () => {
     // The matcher keys on API-key phrasing rather than on the 400 status, so a
     // genuinely malformed request must not be misread as a credential problem —

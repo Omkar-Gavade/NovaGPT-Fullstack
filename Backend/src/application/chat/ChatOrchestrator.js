@@ -98,7 +98,7 @@ export class ChatOrchestrator {
       decision,
       switchPolicy: settings.switchPolicy,
       signal: command.signal,
-      options: generationOptions(settings),
+      options: generationOptions(settings, command.responseFormat),
       // The credential is resolved *inside* the closure, because which provider
       // answers is not known until the executor picks one — and it may pick a
       // different one on the next attempt.
@@ -171,7 +171,7 @@ export class ChatOrchestrator {
           decision,
           switchPolicy: settings.switchPolicy,
           signal: controller.signal,
-          options: generationOptions(settings),
+          options: generationOptions(settings, command.responseFormat),
           invoke: (provider, model, options) =>
             provider.stream(contextMessages, withCredential(options, prepared.credentials, provider)),
           userKeyProviders: new Set(prepared.credentials.keys()),
@@ -662,10 +662,27 @@ function withCredential(options, credentials, provider) {
 }
 
 /** The closed option set adapters receive. Nothing provider-specific crosses. */
-function generationOptions(settings) {
-  return {
+function generationOptions(settings, responseFormat = null) {
+  const options = {
     temperature: settings.temperature,
     maxTokens: settings.maxTokens,
     topP: settings.topP,
   };
+
+  // **The schema has to reach the model, not only the validator.**
+  //
+  // Routing used the response format to pick a `structuredOutput`-capable
+  // model, and the orchestrator validated the reply against it — but nothing
+  // ever *told the model* to produce JSON. Found during deployment
+  // verification: a schema-enforced request to a real Gemini model came back as
+  // prose and was correctly rejected by the validator, having asked for prose.
+  //
+  // Adapters already understand both forms; only the plumbing was missing.
+  if (responseFormat?.type === "json_schema" && responseFormat.schema) {
+    options.jsonSchema = { name: "response", schema: responseFormat.schema, strict: true };
+  } else if (responseFormat?.type === "json") {
+    options.json = true;
+  }
+
+  return options;
 }
