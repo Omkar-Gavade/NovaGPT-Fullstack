@@ -26,6 +26,24 @@ export const StreamEventType = {
   TOOL_CALL: "tool_call",
   /** Token accounting. Once, at the end, where the provider supplies it. */
   USAGE: "usage",
+  /**
+   * Failover occurred; content restarts.
+   *
+   * Emitted before the new attempt's tokens so the client clears its partial
+   * render first. Failover is never silent: a user who notices a tone shift with
+   * no explanation loses confidence in the whole system, while one told "Gemini
+   * hit its quota, Groq answered instead" learns that it works
+   * (docs/backend/15-decisions.md#adr-010--failover-is-never-silent).
+   */
+  SWITCHED: "switched",
+  /**
+   * Keep-alive.
+   *
+   * Proxies and mobile networks close idle connections at 30-60s, so a model
+   * that thinks for 40s before its first token would have its connection closed
+   * by infrastructure — a failure that never reaches the application.
+   */
+  PING: "ping",
   /** Stream complete. Terminal. */
   DONE: "done",
   /** Terminal failure. Terminal. */
@@ -73,3 +91,13 @@ export const errorEvent = (kind, message) => ({
   kind,
   message,
 });
+
+export const switchedEvent = (from, to, reason, message) => ({
+  type: StreamEventType.SWITCHED,
+  from,
+  to,
+  reason,
+  message,
+});
+
+export const pingEvent = () => ({ type: StreamEventType.PING });

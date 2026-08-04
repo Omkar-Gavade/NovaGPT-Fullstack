@@ -16,3 +16,4 @@ export {
   UnsupportedCapabilityError,
   COOLDOWN_MS,
 } from "./ProviderError.js";
+export { CancelledError, DeadlineError } from "./CancelledError.js";

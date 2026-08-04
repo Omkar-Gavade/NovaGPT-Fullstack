@@ -107,6 +107,12 @@ promptBudget = contextWindow
              - safetyMargin           // 10% of window, min 512, max 8000
 ```
 
+**The output reservation is itself capped at 50% of the post-margin window.**
+Found during implementation: a 2,500-token window with a default `maxTokens` of
+2,048 leaves a prompt budget of zero, so *every* request fails with "too large"
+— a configuration mistake presenting as a user error. Capping the reservation
+means a small window always keeps room for a prompt.
+
 **Why reserve output tokens.** Context windows are shared between input and
 output. Filling the window with prompt leaves no room for a reply, and the
 provider either errors or truncates mid-sentence. The failure looks like a model
@@ -236,7 +242,7 @@ Trimming MUST NOT violate any of these:
 |---|---|
 | The system prompt is always present | It carries behavioural instructions; dropping it changes the model's persona mid-conversation |
 | The newest user message is always present | It is the request. Without it there is nothing to answer |
-| Pinned messages are always present | The user explicitly marked them as required context |
+| Pinned messages are always present | The user explicitly marked them as required context. A pinned message exceeding the 40% cap is **truncated**, never dropped — implementation initially dropped it, which silently removed the one thing the user asked to keep |
 | Messages stay in chronological order | Reordering destroys causal structure |
 | Turn pairs are dropped together | No orphaned questions or answers |
 | Every removal appears in the `ContextReport` | Silent removal is the failure mode we are designing against |
@@ -298,6 +304,22 @@ A summary MUST NOT preserve:
 
 **Target compression ratio: ~10:1.** Below ~5:1 the summary is not saving enough
 to justify the model call. Above ~20:1 too much is being lost to be useful.
+
+### Phase 4: deterministic extractive compression
+
+The design above calls for model-generated summaries. Implementation ships an
+**extractive, deterministic** summariser instead, and the constraint turned out
+to be a feature rather than a placeholder:
+
+| Property | Extractive (shipped) | Generative (planned) |
+|---|---|---|
+| Reproducible | Yes — same span, same summary | No, even at temperature 0 across model versions |
+| Can hallucinate | No — every character came from the input | Yes, and the invention becomes context for every later turn |
+| Cost / latency | Zero, nothing in the critical path | A model call and a quota unit |
+| Compression ratio | ~3:1 | ~10:1 |
+
+The worse ratio is the price paid for reproducibility. `SummarizerPort` exists
+so a model-backed implementation replaces it without touching the pipeline.
 
 ### Which model summarises
 

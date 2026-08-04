@@ -14,7 +14,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * (at boot, in a background job, in a unit test) still works.
  */
 
-/** @typedef {{ traceId: string, requestId: string, correlationId: string, userId?: string }} RequestContext */
+/** @typedef {{ traceId: string, requestId: string, correlationId: string, userId?: string, threadId?: string }} RequestContext */
 
 const storage = new AsyncLocalStorage();
 
@@ -41,6 +41,7 @@ export function contextFields() {
     fields.correlationId = ctx.correlationId;
   }
   if (ctx.userId) fields.userId = ctx.userId;
+  if (ctx.threadId) fields.threadId = ctx.threadId;
   return fields;
 }
 

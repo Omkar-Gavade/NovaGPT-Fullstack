@@ -60,6 +60,192 @@ const DEFINITIONS = [
     help: "1 while the process is draining for shutdown.",
     labels: [],
   },
+
+  /* ---- routing (docs/backend/11-observability.md#routing-metrics) ---- */
+  {
+    name: "nova_routing_decisions_total",
+    type: "counter",
+    help: "Routing decisions, by chosen model and selection mode.",
+    labels: ["model", "provider", "mode"],
+  },
+  {
+    name: "nova_routing_failovers_total",
+    type: "counter",
+    help: "Failovers, by origin provider, destination provider and cause.",
+    labels: ["from", "to", "reason"],
+  },
+  {
+    name: "nova_routing_retries_total",
+    type: "counter",
+    help: "Same-provider retries, by provider and failure kind.",
+    labels: ["provider", "kind"],
+  },
+  {
+    name: "nova_routing_exhausted_total",
+    type: "counter",
+    help: "Requests that ran out of candidates, by reason.",
+    labels: ["reason"],
+  },
+  {
+    name: "nova_routing_candidates",
+    type: "histogram",
+    help: "Eligible models per routing decision.",
+    labels: [],
+    // A falling candidate count is a leading indicator: the fleet degrades
+    // provider by provider, and it is visible here *before* requests fail.
+    buckets: [0, 1, 2, 3, 5, 8, 13, 21],
+  },
+  {
+    name: "nova_routing_decision_duration_seconds",
+    type: "histogram",
+    help: "Time spent deciding a route (pure policy, no I/O).",
+    labels: [],
+    // Runs on every request and competes with active streams for the event
+    // loop, so the target is single-digit milliseconds.
+    buckets: [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1],
+  },
+  /* ---- streaming (docs/backend/11-observability.md#request-metrics) ---- */
+  {
+    name: "nova_active_streams",
+    type: "gauge",
+    help: "Streams currently in flight on this instance.",
+    labels: [],
+  },
+  {
+    name: "nova_stream_duration_seconds",
+    type: "histogram",
+    help: "Wall time of a streaming generation, first byte to terminal event.",
+    labels: ["provider", "model", "outcome"],
+    buckets: [0.5, 1, 2.5, 5, 10, 20, 30, 60, 120],
+  },
+  {
+    name: "nova_stream_ttft_seconds",
+    type: "histogram",
+    help: "Time to first token.",
+    labels: ["provider", "model"],
+    // **The metric that matters most for perceived speed.** A 30-second
+    // generation that starts in 300 ms feels fast; a 3-second generation that
+    // starts after 2.5 s feels broken. Total duration averages the two into a
+    // number describing neither, so the buckets here are tight at the low end
+    // where the difference is actually felt.
+    buckets: [0.1, 0.2, 0.3, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10, 20],
+  },
+
+  /* ---- context (docs/backend/11-observability.md#context-metrics) ---- */
+  {
+    name: "nova_context_tokens",
+    type: "histogram",
+    help: "Estimated prompt tokens per assembled context.",
+    labels: [],
+    buckets: [100, 500, 1000, 2500, 5000, 10_000, 25_000, 50_000, 100_000, 200_000],
+  },
+  {
+    name: "nova_context_trimmed_total",
+    type: "counter",
+    help: "Contexts that required trimming to fit the budget.",
+    labels: [],
+  },
+  {
+    name: "nova_context_compressions_total",
+    type: "counter",
+    help: "Contexts in which a span was compressed to a summary.",
+    labels: [],
+  },
+  {
+    name: "nova_token_estimate_error_ratio",
+    type: "histogram",
+    help: "Estimated prompt tokens divided by the provider's reported count.",
+    labels: [],
+    // Centred on 1.0, because that is the only interesting value. Consistent
+    // underestimation causes provider rejections; consistent overestimation
+    // wastes context. Without this the estimator's accuracy is an assumption
+    // nobody ever checks (docs/backend/06-context-engine.md#token-estimation).
+    buckets: [0.5, 0.7, 0.85, 0.95, 1.0, 1.05, 1.15, 1.3, 1.5, 2.0],
+  },
+
+  /* ---- provider health and spend ---- */
+  {
+    name: "nova_provider_health",
+    type: "gauge",
+    help: "Rolling success ratio per provider, 0 to 1.",
+    labels: ["provider"],
+  },
+  {
+    name: "nova_provider_breaker_state",
+    type: "gauge",
+    help: "Circuit state: 0 closed, 0.5 half-open, 1 open.",
+    labels: ["provider"],
+  },
+  {
+    name: "nova_provider_tokens_total",
+    type: "counter",
+    help: "Tokens consumed, by direction.",
+    // Free-tier tokens are counted too. Free tiers have limits — token
+    // consumption is the resource whether or not it is billed
+    // (docs/backend/11-observability.md#cost-monitoring).
+    labels: ["provider", "model", "direction"],
+  },
+  {
+    name: "nova_provider_cost_usd_total",
+    type: "counter",
+    help: "Measured spend in USD, from reported token counts and the price table.",
+    labels: ["provider", "model"],
+  },
+  {
+    name: "nova_wasted_tokens_total",
+    type: "counter",
+    help: "Tokens consumed by attempts that failed or were cancelled.",
+    // The panel that justifies routing work: "15% of tokens are burned on
+    // attempts nobody read" turns an engineering opinion into a decision.
+    labels: ["provider", "reason"],
+  },
+
+  /* ---- tracing ---- */
+  {
+    name: "nova_traces_sampled_total",
+    type: "counter",
+    help: "Completed traces, by tail-sampling decision.",
+    labels: ["decision", "reason"],
+  },
+
+  /* ---- security (docs/backend/10-security.md) ---- */
+  {
+    name: "nova_auth_events_total",
+    type: "counter",
+    help: "Authentication events, by kind and outcome.",
+    // No user id and no email: either would be an unbounded label, and the
+    // second would put personal data in a metrics store that is not built for
+    // it (docs/backend/11-observability.md#cardinality-discipline).
+    labels: ["event", "outcome"],
+  },
+  {
+    name: "nova_rate_limited_total",
+    type: "counter",
+    help: "Requests refused by a rate limit, by rule.",
+    // `degraded` separates "this user is over the limit" from "the counter was
+    // unreachable and the rule failed closed" — two very different alerts.
+    labels: ["rule", "degraded"],
+  },
+  {
+    name: "nova_authz_denied_total",
+    type: "counter",
+    help: "Requests refused by an authorization check, by route and reason.",
+    labels: ["route", "reason"],
+  },
+
+  {
+    name: "nova_provider_attempts_total",
+    type: "counter",
+    help: "Provider attempts, by provider, model and outcome.",
+    labels: ["provider", "model", "outcome"],
+  },
+  {
+    name: "nova_provider_attempt_duration_seconds",
+    type: "histogram",
+    help: "Duration of a single provider attempt.",
+    labels: ["provider", "outcome"],
+    buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60],
+  },
 ];
 
 export class Metrics {

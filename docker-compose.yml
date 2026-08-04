@@ -1,0 +1,80 @@
+# Development stack: API, MongoDB, Redis.
+#
+# One command brings up a working system with **zero provider keys**. That is
+# the critical onboarding property: a new contributor sees the catalog render
+# and the health endpoints answer before they have signed up for anything
+# (docs/backend/13-deployment.md#docker-compose-development).
+#
+#   docker compose up
+#
+# Add keys to Backend/.env incrementally as you get them.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Backend/Dockerfile
+      target: runtime
+    ports: ["8080:8080"]
+    environment:
+      NODE_ENV: development
+      MONGODB_URI: mongodb://mongo:27017/nova
+      REDIS_URL: redis://redis:6379
+      # The mock adapter makes no network calls and serves scripted responses,
+      # so chat works end to end with no credentials at all.
+      MOCK_PROVIDER_ENABLED: "1"
+      # Local development is plain HTTP, and a Secure cookie is never sent over
+      # it — leaving the default on would make sign-in fail silently.
+      AUTH_COOKIE_SECURE: "false"
+      SHUTDOWN_DRAIN_DELAY_MS: "0"
+      LOG_PRETTY: "true"
+    env_file:
+      # Optional: real provider keys live here and the file is git-ignored.
+      - path: ./Backend/.env
+        required: false
+    depends_on:
+      # `service_healthy`, not `service_started`. Mongo accepts connections
+      # seconds before it is ready to serve, and starting on "started" means
+      # every first boot logs a connection error that is pure noise.
+      mongo: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    develop:
+      watch:
+        # Edit-to-effect in about a second, without rebuilding the image.
+        - { action: sync, path: ./Backend/src, target: /app/src }
+        - { action: rebuild, path: ./Backend/package.json }
+    # The application writes nothing to disk. Enforcing it blocks a whole class
+    # of persistence attacks, and enforcing it *here* means the production flag
+    # is exercised daily rather than discovered to be broken at deploy time.
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  mongo:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes:
+      # Named, so `docker compose down` does not destroy the local database.
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  mongo-data:
+  redis-data:

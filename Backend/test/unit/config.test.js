@@ -2,8 +2,22 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { loadConfig, ConfigError } from "../../src/infrastructure/config/loadConfig.js";
 import { Secret } from "../../src/infrastructure/telemetry/Secret.js";
+import { JwtSigner } from "../../src/infrastructure/security/JwtSigner.js";
 
 const MINIMAL = { MONGODB_URI: "mongodb://localhost:27017/nova" };
+
+/**
+ * Production has extra, cross-field requirements — signing keys and a real CORS
+ * allowlist — so a production fixture needs more than `NODE_ENV`.
+ */
+const { privateKey, publicKey } = JwtSigner.generateKeyPair();
+const PRODUCTION = {
+  ...MINIMAL,
+  NODE_ENV: "production",
+  JWT_PRIVATE_KEY: privateKey,
+  JWT_PUBLIC_KEY: publicKey,
+  CORS_ORIGINS: "https://app.novagpt.test",
+};
 
 describe("loadConfig", () => {
   test("boots from the minimum viable environment", () => {
@@ -57,12 +71,9 @@ describe("loadConfig", () => {
 
   test("defaults pretty logging on outside production and off inside it", () => {
     assert.equal(loadConfig(MINIMAL).log.pretty, true);
-    assert.equal(loadConfig({ ...MINIMAL, NODE_ENV: "production" }).log.pretty, false);
+    assert.equal(loadConfig(PRODUCTION).log.pretty, false);
     // Explicit setting always wins over the environment-derived default.
-    assert.equal(
-      loadConfig({ ...MINIMAL, NODE_ENV: "production", LOG_PRETTY: "true" }).log.pretty,
-      true
-    );
+    assert.equal(loadConfig({ ...PRODUCTION, LOG_PRETTY: "true" }).log.pretty, true);
   });
 
   test("parses boolean-ish env values", () => {

@@ -100,6 +100,17 @@ export class ProviderHealthManager {
     this.metrics?.setGauge("nova_provider_health", this.registry.health(providerId), {
       provider: providerId,
     });
+    // Separate from health, and not derivable from it: a provider can be
+    // perfectly healthy by success ratio and still have an open breaker after
+    // a single `quota` failure. The status grid during an incident reads this
+    // one (docs/backend/11-observability.md#provider-dashboard--is-the-fleet-healthy).
+    // Read after `health()` above, which is what advances an expired OPEN to
+    // HALF_OPEN — the phase is lazily evaluated, so the order matters.
+    this.metrics?.setGauge(
+      "nova_provider_breaker_state",
+      breakerGauge(this.registry.state(providerId)?.phase),
+      { provider: providerId }
+    );
 
     return result;
   }
@@ -164,4 +175,15 @@ export class ProviderHealthManager {
       timer.unref?.();
     });
   }
+}
+
+/**
+ * Breaker phase as a number a dashboard can colour: 0 closed, 0.5 half-open,
+ * 1 open. A string label would make the status grid a table of text rather
+ * than a heat map, and would put an unbounded-ish value in a label position.
+ */
+function breakerGauge(phase) {
+  if (phase === ProviderPhase.OPEN) return 1;
+  if (phase === ProviderPhase.HALF_OPEN) return 0.5;
+  return 0;
 }

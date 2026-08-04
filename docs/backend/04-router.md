@@ -12,7 +12,18 @@ It is split in two, deliberately:
 | Component | Layer | Nature | Responsibility |
 |---|---|---|---|
 | **`RoutingPolicy`** | `domain/routing/` | Pure function | Given requirements, preference, and a health snapshot → a `RoutingDecision` |
-| **`RoutingExecutor`** | `application/chat/` | Effectful | Carry out the decision: invoke, observe, retry, fail over, report |
+| **`RoutingService`** | `application/routing/` | Thin | Derive requirements, capture a snapshot, call the policy, log and count the decision |
+| **`RoutingExecutor`** | `application/routing/` | Effectful | Walk the chain: invoke, observe, retry, fail over, report |
+| **`ProviderInvoker`** | `infrastructure/routing/` | I/O mechanics | One attempt: deadline, abort signal, latency measurement, error normalisation |
+
+**Why the executor splits in two.** The plan named a single effectful component.
+Implementation separated *orchestration* (which candidate next, retry or fail
+over, what to report) from *I/O mechanics* (deadlines, `AbortController`
+chaining, measuring latency, mapping a thrown value into the taxonomy). They
+change for different reasons and sit in different layers: orchestration is
+application-layer policy execution, while wall-clock deadlines and abort signals
+are infrastructure. Keeping them fused would have put `setTimeout` and
+`AbortController` inside the layer that is supposed to be testable with fakes.
 
 **Why the split is load-bearing:** the policy is the part with subtle logic, and
 it must be exhaustively testable — every combination of preference, capability,
@@ -124,13 +135,14 @@ flowchart TB
   B -->|yes| C{"Provider configured<br/>and breaker allows?"}
   C -->|no| X
   C -->|yes| D["Eligible set"]
-  D --> E["1 · Health score (desc)"]
-  E --> F["2 · Tier — free before paid"]
-  F --> G["3 · Latency (asc, measured)"]
-  G --> H["4 · Cost band (asc)"]
-  H --> I["5 · Capability fit (least over-provisioned)"]
-  I --> J["6 · Stable tiebreak — catalog order"]
-  J --> K["Ranked list<br/>primary + fallbacks"]
+  D --> E["1 · Health score (desc, bucketed)"]
+  E --> P["2 · Operator priority (desc)"]
+  P --> F["3 · Tier — free before paid"]
+  F --> G["4 · Latency (asc, measured)"]
+  G --> H["5 · Cost band (asc)"]
+  H --> I["6 · Capability fit (least over-provisioned)"]
+  I --> J["7 · Stable tiebreak — catalog order"]
+  J --> K["Ranked list<br/>one model per provider"]
 ```
 
 ### Every criterion, and why it sits where it does
@@ -146,32 +158,46 @@ that is slower, because a failure costs the full attempt latency *plus* the
 failover attempt. Health as a continuous score (not a boolean) means traffic
 shifts away gradually as a provider degrades, rather than at a cliff.
 
-**2 — Free tier before paid.** NovaGPT's premise is zero-cost operation
+*Health is compared in buckets of 0.1, not exactly.* Implementation showed that
+raw comparison lets a 0.98 provider outrank a 0.97 one, so the ordering churns
+on statistical noise and one unlucky sample reshuffles routing. Bucketing keeps
+genuinely different health levels apart while treating indistinguishable ones as
+tied, letting the cheaper or faster criterion decide.
+
+**2 — Operator priority.** A deployment-level bias, e.g. "prefer EU-hosted".
+Placed *below* health and *above* the automatic preferences: an explicit
+operator instruction outranks the system's own guesses, but must never send
+traffic to a provider that is failing. It remains a bias, not an override — the
+eligibility gate runs first, so priority cannot make an unhealthy or incapable
+provider selectable
+([provider prioritisation](#provider-prioritisation)).
+
+**3 — Free tier before paid.** NovaGPT's premise is zero-cost operation
 ([01](01-system-overview.md#vision)). Between two healthy, capable models, using
 the free one is strictly better for the operator and indistinguishable for the
 user. Placed *after* health so we never prefer a broken free provider to a
 working paid one — free is a preference, not a mandate.
 
-**3 — Latency, measured.** Rolling average of the last 20 real requests, falling
+**4 — Latency, measured.** Rolling average of the last 20 real requests, falling
 back to the catalog's static `speed` score when there is no measurement yet.
 *Why measured over static:* static scores are marketing numbers gathered under
 ideal conditions. Measured latency reflects this deployment's region, this
 network, this time of day, and this provider's current load — the only numbers
 that describe what a user will actually experience.
 
-**4 — Cost band.** Coarse bands (`Free`/`$`/`$$`/`$$$`) rather than
+**5 — Cost band.** Coarse bands (`Free`/`$`/`$$`/`$$$`) rather than
 per-1K-token pricing. *Why coarse:* exact pricing changes constantly across eight
 providers and would need continuous maintenance to stay accurate. Bands are
 stable, good enough to order candidates, and do not rot. Exact cost accounting
 belongs in usage records ([11](11-observability.md#cost-monitoring)), where it is
 measured rather than predicted.
 
-**5 — Capability fit.** Between two otherwise-equal models, prefer the one less
+**6 — Capability fit.** Between two otherwise-equal models, prefer the one less
 over-provisioned for the request. Routing a 200-token question to a 2M-context
 model burns a scarce, expensive resource on a request that does not need it, and
 starves the long-document request that arrives a minute later.
 
-**6 — Stable tiebreak.** Catalog order. *Why explicit:* an unstable sort makes
+**7 — Stable tiebreak.** Catalog order. *Why explicit:* an unstable sort makes
 identical requests route differently across restarts, which makes bug reports
 irreproducible. Determinism is worth more here than any marginal gain from
 randomising.
@@ -259,6 +285,14 @@ settings, tool definitions. **Reset per attempt:** the accumulated stream buffer
 **Attempts never revisit a provider already tried in this request** — the tried
 set is passed to the policy, which excludes it before ranking.
 
+**The fallback chain holds at most one model per provider.** A second model from
+the same provider shares that provider's breaker, credential, and quota, so
+trying it is not failover: it is a second attempt against something already
+known to be failing, spending one of only three attempts. The policy therefore
+keeps the best-ranked model from each provider and drops the rest. This was
+found during implementation — a chain of two models from one provider made
+"failover" a no-op that still consumed the budget.
+
 ### Switch policies
 
 Per-conversation, user-controlled:
@@ -305,7 +339,8 @@ providers over single transient blips and cause needless model churn.
 | Max attempts | 2 retries (3 total) | Beyond this, the failure is not transient |
 | Backoff | Exponential, base 300 ms, cap 4 s | Long enough for a transient blip; short enough that a user does not perceive a stall |
 | Jitter | Full jitter (`random(0, backoff)`) | Without jitter, N clients that failed together retry together, producing a synchronised thundering herd that recreates the overload |
-| `Retry-After` | Honoured when present, overriding backoff | The provider knows better than our heuristic. Ignoring it is how a rate limit becomes a ban |
+| `Retry-After` | Honoured when present, overriding backoff, and **not clipped by the cap** | The cap bounds our own guesswork; the provider is stating a fact. Shortening the wait it asked for is how a rate limit becomes a ban |
+| `Retry-After` longer than the remaining budget | Fail over instead of waiting | Waiting out a delay the request cannot afford, then failing anyway, is strictly worse than going elsewhere now |
 | Cancellation | Aborts immediately on signal | A disconnected client's request must stop consuming quota now |
 
 **Streaming is retried differently.** Establishing a stream may be retried; a

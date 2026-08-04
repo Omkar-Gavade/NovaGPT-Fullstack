@@ -72,6 +72,34 @@ large majority while keeping deploys fast. Streams cut at shutdown receive a
 clean `error` event ([07](07-streaming-engine.md#error-propagation)) rather than
 a dropped connection, so the client can retry immediately.
 
+### Draining, as implemented
+
+The first implementation aborted **every** in-flight generation at shutdown,
+which made a rolling deploy cut conversations that were two seconds from
+finishing. `StreamRegistry.drain(budgetMs)` now waits for live streams and
+aborts only what is left when the budget runs out; the composition root gives it
+60% of the grace period, leaving room for the rest of the sequence.
+
+Two properties matter and are both tested:
+
+- **The wait is not `unref`'d.** An unref'd timer lets Node decide there is
+  nothing left to do and exit mid-drain — the same defect that was found in the
+  drain delay during Phase 0.
+- **`terminationGracePeriodSeconds` must exceed `SHUTDOWN_GRACE_MS` plus the
+  preStop pause.** If it does not, Kubernetes SIGKILLs the process partway
+  through, which cuts *every* stream instead of the stragglers — the exact
+  outcome draining exists to avoid.
+
+### Artefacts
+
+| | |
+|---|---|
+| [`Backend/Dockerfile`](../../Backend/Dockerfile) | Three stages: dependencies, **verification**, runtime. The middle one runs the suite against the same lockfile the runtime layer installs — a pipeline that tested different dependencies from the ones shipped is not a green pipeline. Built from the repository root, because the suite reads `ops/` |
+| [`docker-compose.yml`](../../docker-compose.yml) | Development. `read_only: true` here as well as in production, so the flag is exercised daily rather than found broken at deploy time |
+| [`ops/deploy/kubernetes/`](../../ops/deploy/kubernetes/) | Deployment, service, PDB, HPA, ingress. The HPA scales on `nova_active_streams` as well as CPU: Node can show moderate CPU while the event loop is saturated by open streams |
+| [`ops/deploy/smoke.sh`](../../ops/deploy/smoke.sh) | Nine checks, exercising the real product path. One counts **SSE frames** — more than one frame is the only check here that catches a buffering proxy |
+| [`ops/backup/`](../../ops/backup/) | Encrypted backup, and a restore that is **verified into a scratch database on every run** |
+
 ## Docker Compose (development)
 
 One command brings up the full stack: API, MongoDB, Redis.
@@ -281,6 +309,27 @@ both and reads new-with-fallback, backfill, then remove the old field in a
 **Staging uses a separate provider key set.** Sharing production keys would let a
 staging load test exhaust the production quota — a self-inflicted outage caused
 by testing.
+
+## Security prerequisites for a production deploy
+
+Three of these are enforced at boot — the process refuses to start rather than
+starting and then behaving wrongly, because a deployment that runs and rejects
+every login is far harder to diagnose than one that says which variable is
+missing ([10](10-security.md)).
+
+| Requirement | Enforced by | Why it cannot be skipped |
+|---|---|---|
+| `JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY` | Boot validation | An ephemeral pair invalidates every token on restart and cannot be verified by a second instance |
+| `AUTH_REQUIRED=true` | Boot validation | Off leaves every conversation endpoint open |
+| `CORS_ORIGINS` is not `*` | Boot validation | A wildcard lets any origin drive the API with a user's credentials |
+| The audit collection is insert-only for the application role | Database grant | Enforcement in code is defeated by the same compromise that made the log worth tampering with (T12) |
+| `/api/v1/admin/metrics` restricted at the ingress | Ingress config | It already requires the `admin:metrics` permission; this is depth, not a replacement |
+| `ENCRYPTION_MASTER_KEY` set before any user key is stored | Operator | The cipher is only constructed when it is present; adding it later does not retroactively protect anything |
+
+**The audit grant, concretely.** The application's database user needs `insert`
+and `find` on the audit collection and nothing else. Granting `update` or
+`remove` there — even briefly, even for a migration — removes the one property
+the log has.
 
 ## Degradation matrix
 

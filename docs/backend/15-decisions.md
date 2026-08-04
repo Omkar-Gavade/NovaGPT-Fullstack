@@ -1099,3 +1099,233 @@ Every new capability added to `ProviderPort` needs corresponding contract cases.
 The suite is the mechanism that keeps provider onboarding cheap *and* safe — and
 it is what makes the claim "adding a provider takes an hour" verifiable rather
 than aspirational.
+
+---
+
+## ADR-021 — The JWT codec and the cookie codec are written here, not imported
+
+**Status:** Accepted
+
+### Problem
+
+Tokens and cookies need encoding and decoding. Both have well-maintained
+libraries. Every dependency is also code we ship and cannot audit, and the
+supply chain (T14) has the worst effort-to-impact ratio available to an
+attacker.
+
+### Options considered
+
+| Option | Assessment |
+|---|---|
+| **`jsonwebtoken` + `cookie-parser`** | Familiar; two dependencies and their transitive trees on the authentication path |
+| **`jose`** | Modern, well-audited, broad; the breadth is the cost — it supports algorithms and flows this system deliberately does not |
+| **Write both** | ~90 lines total, fully auditable; ours to get wrong |
+
+### Decision
+
+`JwtSigner` and `cookies.js` are written against `node:crypto` and the standard
+library.
+
+### Reasoning
+
+JWT is a small, frozen format, and the parts libraries get wrong are precisely
+the parts that matter: taking `alg` from the token header — which permits the
+`alg: none` and HS-with-the-RSA-public-key forgeries — and lenient claim
+checking. Here the algorithm is fixed by the module and the header's `alg` is
+*verified against* it, never *used to select* it. Both attacks are asserted in
+`test/unit/jwt.test.js`.
+
+The cookie codec parses only what this application sets, which additionally
+means a malformed third-party cookie cannot make request handling throw.
+
+### Trade-offs
+
+- We own the correctness. Mitigated by keeping the surface tiny and the tests
+  adversarial rather than illustrative.
+- No JWK/JWKS endpoint, no encrypted tokens, no algorithm agility. None are
+  required; if a JWKS endpoint is ever needed, `jose` becomes the right answer
+  and this decision should be revisited rather than extended.
+
+---
+
+## ADR-022 — `null` is an owner, not a wildcard
+
+**Status:** Accepted · **Supersedes the pre-auth behaviour of the repositories**
+
+### Problem
+
+Before accounts existed, both thread repositories treated a `null` owner as "no
+scoping requested" and returned every thread. That was harmless with no
+accounts. With accounts, a single call site that forgot to pass an owner — or a
+principal that was `undefined` rather than a `Principal` — became a full
+cross-user disclosure (T5).
+
+### Decision
+
+Owner scoping is strict equality including `null`. Anonymous callers scope to
+`null` and see threads with no owner, which is a scope like any other.
+`Principal.anonymous()` exists so that `req.principal` is *always* an object and
+there is no call site where a missing check silently becomes "no scope".
+
+Two structural consequences follow, and both are enforced rather than reviewed:
+
+- `save()` includes the owner in its filter. A caller who supplies another
+  user's thread id no longer upserts over that conversation; the unique index on
+  `id` refuses the insert.
+- `ChatOrchestrator` answers **404** when a supplied thread id exists under a
+  different owner, rather than creating a thread that would take it over on the
+  next save. 404 rather than 403, because 403 confirms the id exists.
+
+### Reasoning
+
+A permissive default is a defence that works until someone forgets, and this one
+failed *open*. Making the safe behaviour the default one costs a strict equality
+and removes the entire class.
+
+### Trade-offs
+
+Threads created before authentication landed have `userId: null` and are now
+visible only to anonymous callers. With `AUTH_REQUIRED=true` that means they are
+not visible at all. Accepted: pre-auth conversations belong to nobody, and
+assigning them to the first account that asks would be worse.
+
+---
+
+## ADR-023 — The first registered account is the operator
+
+**Status:** Accepted
+
+### Problem
+
+An admin has to exist before anyone can be promoted to one. Every mechanism for
+creating the first one has a failure mode.
+
+### Options considered
+
+| Option | Assessment |
+|---|---|
+| **A seeded default account** | Simple; a well-known credential shipped to every deployment, and the one people forget to change |
+| **An environment variable naming the admin email** | Explicit; a variable that only matters once, and silently does nothing if set after first boot |
+| **Manual database edit** | No code; undocumented, unrepeatable, and requires database access to run the product |
+| **First account wins** | One rule, no credential, no extra variable; a race if registration is open and unattended |
+
+### Decision
+
+The account created when the user collection is empty is an `admin`. Everything
+after it is a `user`.
+
+### Reasoning
+
+It is the only option that creates no credential and no configuration that can
+be got wrong later. The operator installs the product and signs up; that is the
+whole procedure.
+
+### Trade-offs
+
+A deployment left open and unattended between first boot and first registration
+hands admin to whoever arrives first. `AUTH_ALLOW_REGISTRATION=false` after
+setup is the control, and the deployment runbook says so.
+
+---
+
+## ADR-024 — Tracing is collected in process, not through an OpenTelemetry SDK
+
+**Status:** Accepted
+
+### Problem
+
+The observability design calls for OpenTelemetry with **tail-based sampling**.
+Those two requirements pull in different directions: the OTel Node SDK does not
+make tail-based sampling decisions in process. It cannot — the decision needs
+the whole trace, and the SDK exports spans as they finish. Tail sampling in the
+OTel world is a *collector* feature, which means the design as written requires
+deploying and operating an OpenTelemetry Collector.
+
+### Options considered
+
+| Option | Assessment |
+|---|---|
+| **Full OTel SDK + Collector with tail sampling** | The canonical answer; correct at scale. Six or more dependencies plus a collector deployment, for a system whose current deployment target is "a single VM with Docker Compose" |
+| **OTel SDK, head-based sampling** | Fewer moving parts; throws away exactly the traces that turn out to matter, which is the specific failure the design rejects |
+| **OTel SDK for spans, our own buffering and sampling** | Keeps the wire format; the SDK's value *is* its exporters and its context management, both of which this would bypass |
+| **Collect and sample in process** | ~180 lines, no dependencies, tail sampling actually works; the wire format is ours until an exporter is written |
+
+### Decision
+
+`Tracer` and `SamplingPolicy` are written against `node:async_hooks` and
+`node:crypto`. Sampled traces are exported through a one-method interface, whose
+current implementation writes them as `trace.sampled` log events.
+
+### Reasoning
+
+The part with real value here is the sampling policy — keep every error, every
+failover and every slow request, sample the rest at 5% — and that is pure
+arithmetic over a finished trace. It is ~70 lines and it is fully unit-tested,
+including the cases that matter (a successful failover, a 5xx that never threw,
+a 4xx that must *not* be treated as an error).
+
+What the SDK would contribute on top is span plumbing and exporters. The
+plumbing is small, because async local storage does the hard part. The exporters
+are the thing worth having — and the day one is needed, `LogSpanExporter` is
+replaced by an OTLP exporter behind the same method, without touching a single
+instrumented call site.
+
+Meanwhile W3C `traceparent` propagation is implemented, so NovaGPT already joins
+an upstream trace and passes one downstream. The interoperability that actually
+matters does not depend on the SDK.
+
+### Trade-offs
+
+- No Jaeger or Tempo view until an exporter is written. Traces are read from the
+  log pipeline, where they sit beside the log lines from the same request — which
+  during an incident is arguably better, and at volume is worse.
+- No automatic instrumentation of `http`, `mongodb` or `ioredis`. Spans exist
+  where they were deliberately placed. Fewer spans, all of them meaningful.
+- The buffer holds a trace until its root ends. Bounded by `TRACE_MAX_SPANS`,
+  and the bound is asserted.
+
+### Revisit when
+
+Trace volume outgrows the log pipeline, or someone wants a flame graph. Both are
+signals to write an OTLP exporter — not to rewrite the instrumentation.
+
+---
+
+## ADR-025 — An unpriced model costs `null`, not zero
+
+**Status:** Accepted
+
+### Problem
+
+`CostTable.costFor` returns a number for a priced model. A model with no entry
+has to return *something*, and the obvious candidate is `0` — every free-tier
+model already costs zero, so the value looks harmless.
+
+### Decision
+
+Unpriced returns `null`. Free returns `0`. They are stored differently,
+aggregated differently, and only one of them is reported as spend.
+
+### Reasoning
+
+They mean opposite things. `0` is a measured fact: this model is free, and we
+know it. `null` is an absence: nobody has told the system what this costs.
+
+Collapsing them makes the failure silent and self-reinforcing. A new provider
+ships, someone adds the adapter and forgets the price table, and the cost
+dashboard reports the fleet getting *cheaper* as traffic moves onto a model
+whose spend is invisible. The number looks plausible, so nobody investigates —
+and the panel that exists to catch cost anomalies is now the thing hiding one.
+
+With `null`, the tokens are still counted (so consumption is right), the cost
+metric is not incremented (so spend is not understated as zero), and
+`CostTable.unpriced()` names the gap for the quarterly audit.
+
+### Trade-offs
+
+- Every aggregation must decide what to do with `null`. Both repository
+  implementations coalesce to zero *when summing* while keeping the record's
+  value intact — asserted in both, because a double that summed differently
+  would let a cost test pass and be wrong in production.
+- A dashboard summing raw cost slightly understates a fleet with unpriced
+  models. That is the honest direction to be wrong in, and the audit closes it.

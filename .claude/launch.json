@@ -4,20 +4,41 @@
     {
       "name": "backend",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "Backend", "run", "dev"],
-      "port": 8080
+      "runtimeArgs": [
+        "--prefix",
+        "Backend",
+        "run",
+        "dev"
+      ],
+      "port": 8080,
+      "env": {
+        "PERSISTENCE_IN_MEMORY": "false",
+        "MOCK_PROVIDER_ENABLED": "1",
+        "MONGODB_URI": "mongodb://127.0.0.1:27017/nova-dev",
+        "PORT": "8080"
+      }
     },
     {
       "name": "novagpt-fe",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "Frontend", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "Frontend",
+        "run",
+        "dev"
+      ],
       "port": 5173,
       "autoPort": true
     },
     {
       "name": "platform",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "Backend", "run", "platform"],
+      "runtimeArgs": [
+        "--prefix",
+        "Backend",
+        "run",
+        "platform"
+      ],
       "port": 8080
     }
   ]

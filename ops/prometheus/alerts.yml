@@ -1,0 +1,150 @@
+# NovaGPT alerting rules.
+#
+# **Alert on symptoms users feel, not on causes.** A provider going down is not
+# an alert-worthy event — that is the architecture working as designed. Users
+# being unable to get an answer is
+# (docs/backend/11-observability.md#alerting).
+#
+# Every `page` alert carries a `runbook` annotation pointing at a real document.
+# An alert without a runbook is a notification that someone's night is ruined
+# with no information about how to fix it.
+
+groups:
+  - name: novagpt-paging
+    interval: 30s
+    rules:
+      - alert: NovaServiceDown
+        # `up` comes from the scrape itself, so this fires even when the process
+        # is too wedged to report anything of its own.
+        expr: up{job="novagpt"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "NovaGPT is not responding to scrapes"
+          description: "No instance has answered for 2 minutes."
+          runbook: "ops/runbooks/service-down.md"
+
+      - alert: NovaAllProvidersUnavailable
+        # The leading indicator turned terminal: zero eligible candidates means
+        # no user can chat, whatever the health of anything else.
+        expr: histogram_quantile(0.5, sum(rate(nova_routing_candidates_bucket[5m])) by (le)) == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "No provider is eligible to answer"
+          description: "Routing has had zero candidates for 2 minutes. Every chat request is failing."
+          runbook: "ops/runbooks/all-providers-unavailable.md"
+
+      - alert: NovaErrorRateCritical
+        expr: |
+          sum(rate(nova_requests_total{status=~"5.."}[5m]))
+            / sum(rate(nova_requests_total[5m])) > 0.05
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "More than 5% of requests are failing"
+          runbook: "ops/runbooks/error-rate.md"
+
+      - alert: NovaDatabaseUnreachable
+        expr: nova_dependency_up{dependency="mongodb"} == 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "MongoDB is unreachable"
+          description: "Conversations cannot be read or written. The catalog keeps serving."
+          runbook: "ops/runbooks/database-unreachable.md"
+
+      - alert: NovaPlatformKeyRejected
+        # `auth` against a platform key means a key is dead. Nothing recovers on
+        # its own, so this pages on the first occurrence rather than a rate.
+        expr: increase(nova_routing_retries_total{kind="auth"}[10m]) > 0
+        labels: { severity: page }
+        annotations:
+          summary: "A provider rejected our credential"
+          description: "Provider {{ $labels.provider }} returned an auth failure. A human must rotate the key."
+          runbook: "ops/runbooks/platform-key-rejected.md"
+
+  - name: novagpt-warning
+    interval: 1m
+    rules:
+      - alert: NovaProviderDegraded
+        # Notify, never page. The entire architecture exists so that one
+        # provider degrading is a non-event; paging on it would mean paging on
+        # the system working correctly.
+        expr: |
+          sum by (provider) (rate(nova_provider_attempts_total{outcome="success"}[15m]))
+            / sum by (provider) (rate(nova_provider_attempts_total[15m])) < 0.8
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.provider }} is succeeding less than 80% of the time"
+
+      - alert: NovaElevatedFailover
+        expr: |
+          sum(rate(nova_routing_failovers_total[15m]))
+            / sum(rate(nova_routing_decisions_total[15m])) > 0.2
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 20% of requests are failing over"
+          description: "Users are still being answered, but the fleet is absorbing a lot of failure."
+
+      - alert: NovaCandidatePoolShrinking
+        # The leading indicator. A falling candidate count means the fleet is
+        # degrading provider by provider, and it is visible here *before*
+        # requests start failing — the difference between preventing an incident
+        # and responding to one.
+        expr: histogram_quantile(0.5, sum(rate(nova_routing_candidates_bucket[10m])) by (le)) < 3
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Fewer than 3 providers are eligible"
+
+      - alert: NovaTtftRegression
+        # TTFT rather than total duration: a 30s generation that starts in 300ms
+        # feels fast, and total duration averages the two into a number that
+        # describes neither.
+        expr: |
+          histogram_quantile(0.95, sum(rate(nova_stream_ttft_seconds_bucket[30m])) by (le))
+            > 2 * histogram_quantile(0.95, sum(rate(nova_stream_ttft_seconds_bucket[7d])) by (le))
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "p95 time-to-first-token has doubled against the 7-day baseline"
+
+      - alert: NovaCostAnomaly
+        expr: |
+          sum(increase(nova_provider_cost_usd_total[1d]))
+            > 2 * sum(increase(nova_provider_cost_usd_total[7d])) / 7
+        labels: { severity: warning }
+        annotations:
+          summary: "Daily spend is more than twice the 7-day average"
+
+      - alert: NovaWastedSpend
+        # The number that justifies routing work. If a large share of tokens is
+        # consumed by attempts nobody read, retry policy or timeouts need tuning.
+        expr: |
+          sum(rate(nova_wasted_tokens_total[1h]))
+            / sum(rate(nova_provider_tokens_total[1h])) > 0.15
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "Over 15% of tokens are being spent on failed or cancelled attempts"
+
+      - alert: NovaAuthFailureSpike
+        expr: sum(rate(nova_auth_events_total{event="login",outcome="failure"}[10m])) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Elevated sign-in failures — possible credential stuffing"
+          runbook: "ops/runbooks/auth-failure-spike.md"
+
+      - alert: NovaRateLimiterDegraded
+        # Specifically the fail-closed case: the counter store is unreachable
+        # and sign-in is being refused as a result. Different alert, different
+        # response, from an ordinary user hitting their limit.
+        expr: sum(rate(nova_rate_limited_total{degraded="true"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Rate limiting is running degraded — the counter store is unreachable"

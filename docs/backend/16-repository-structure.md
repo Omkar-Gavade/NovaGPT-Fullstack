@@ -26,8 +26,13 @@ Backend/
 │   │   ├── capability/
 │   │   ├── context/
 │   │   ├── streaming/
+│   │   ├── context/
 │   │   ├── lifecycle/
 │   │   ├── provider/
+│   │   ├── identity/
+│   │   ├── security/
+│   │   ├── observability/
+│   │   ├── usage/
 │   │   ├── errors/
 │   │   └── ports/
 │   ├── application/
@@ -36,6 +41,11 @@ Backend/
 │   │   ├── catalog/
 │   │   ├── health/
 │   │   ├── providers/
+│   │   ├── routing/
+│   │   ├── streaming/
+│   │   ├── identity/
+│   │   ├── security/
+│   │   ├── usage/
 │   │   ├── admin/
 │   │   └── shared/
 │   ├── infrastructure/
@@ -46,10 +56,12 @@ Backend/
 │   │   │   ├── health/
 │   │   │   └── catalog/
 │   │   ├── persistence/
-│   │   │   └── mongo/
+│   │   │   ├── mongo/
+│   │   │   └── memory/
 │   │   ├── cache/
 │   │   │   ├── redis/
 │   │   │   └── memory/
+│   │   ├── security/
 │   │   ├── system/
 │   │   ├── telemetry/
 │   │   └── config/
@@ -95,12 +107,16 @@ performs I/O; no `process.env`; no `Date.now()`; no `Math.random()`.
 | `conversation/` | `Thread`, `Message`, `ConversationSettings`, and their invariants | Conversation rules change with product decisions; routing rules change with operational learning. Different reasons to change |
 | `routing/` | `RoutingPolicy`, ranking, `RoutingDecision`, `CircuitBreaker` | The system's most important and most-tested logic. Isolated so it is trivially testable and obvious where to find |
 | `capability/` | `CapabilityMatrix`, `ModelDescriptor`, `RequirementSet`, matching | Separate from `routing/` because capabilities change when providers ship models (frequent, data, low risk) while routing changes when strategy changes (rare, logic, high risk). Fusing them means every new model touches the ranking algorithm's file |
-| `context/` | Assembly, `TokenBudget`, trimming, compression policy, `ContextReport` | An independent pipeline with its own invariants; used by chat but conceptually separate |
+| `context/` | `ContextEngine`, `TokenEstimator`, `TokenBudget`, `TrimmingPipeline`, `Summarizer`, `MemoryInjection`, `ContextReport` | An independent pipeline with its own invariants; used by chat but conceptually separate. Pure and deterministic, so "what happens to a 200-message thread at a 128K budget?" is a unit test |
 | `streaming/` | `StreamEvent` types, session state, terminal-event rules | The protocol is domain vocabulary. Its *transport* is not, and lives in `interfaces/` |
 | `provider/` | `ProviderState` (the phase machine, merged with the circuit breaker), `ProviderDescriptor` | Kept out of `capability/` because they change for different reasons: a provider's *health* changes second to second, its *capabilities* change when a provider ships a model. See [03](03-provider-system.md#one-state-object-not-two) for why the breaker and the lifecycle are one object |
 | `lifecycle/` | `ServiceState` — the process phase machine (starting → ready → draining → stopped) | Read by the readiness check (application) and driven by the shutdown handler (infrastructure). Since those two may import the domain but not each other, this is the only placement that keeps the dependency rule intact. The one-way transitions are a real rule: a draining process must never advertise itself ready again |
+| `identity/` | `User`, `Session`, `Principal`, `Role`/`Permission`, `LockoutPolicy`, credential rules | Accounts are a domain concern, not an HTTP one. `Principal` in particular: it exists so `req.principal` is always an object, which is what removes the call site where a missing null check silently becomes "no owner scope" ([10](10-security.md#what-scoped-by-owner-actually-means)) |
+| `security/` | `RateLimitRule`, `RateLimitDecision` | Deciding whether a count is over the line is arithmetic; counting is I/O. Splitting them puts every threshold, boundary and fail-open/fail-closed choice in a unit test with no Redis in sight |
+| `observability/` | `Span`, `SamplingPolicy` | Deciding which traces are worth keeping is arithmetic over a finished trace, with no clock and no I/O. In the domain, it is a unit test; in a tracing backend, it is something you observe later and cannot reproduce |
+| `usage/` | `UsageRecord` | One provider attempt as an accounting fact. In the domain because the rules — a cancelled attempt is not a failed one, an unpriced model is not a free one — are decisions, not storage details ([ADR-025](15-decisions.md#adr-025--an-unpriced-model-costs-null-not-zero)) |
 | `errors/` | `ProviderError`, `FailureKind`, `UnsupportedCapabilityError`, failover rules | Every layer references these. A dedicated home prevents circular imports between contexts that all need the taxonomy |
-| `ports/` | Interfaces the domain declares: `ProviderPort`, `ThreadRepositoryPort`, `CachePort`, `ClockPort`, `LoggerPort`, `RetrievalPort` | **The most important directory in the repository.** These interfaces are what invert the dependency: infrastructure implements what the domain requires, rather than the domain adapting to what infrastructure offers ([02](02-architecture.md#why-ports-are-owned-by-the-domain)) |
+| `ports/` | Interfaces the domain declares: `ProviderPort`, `ThreadRepositoryPort`, `CachePort`, `ClockPort`, `LoggerPort`, `RetrievalPort`, `UserRepositoryPort`, `SessionRepositoryPort`, `PasswordHasherPort`, `TokenSignerPort`, `AuditLogPort` | **The most important directory in the repository.** These interfaces are what invert the dependency: infrastructure implements what the domain requires, rather than the domain adapting to what infrastructure offers ([02](02-architecture.md#why-ports-are-owned-by-the-domain)) |
 
 ---
 
@@ -120,9 +136,11 @@ domain (which then needs I/O).
 
 | Directory | Contains | Note |
 |---|---|---|
-| `chat/` | `SendMessage`, `StreamMessage`, `RegenerateMessage`, `RoutingExecutor` | The core product path. `RoutingExecutor` lives here, not in `domain/`, because it performs I/O — the *policy* is pure, the *execution* is not |
+| `chat/` | `ChatOrchestrator`, `StreamRegistry` | The core product path. `RoutingExecutor` lives here, not in `domain/`, because it performs I/O — the *policy* is pure, the *execution* is not |
 | `threads/` | Thread CRUD, settings, duplicate, share | |
 | `catalog/` | Model catalog assembly with live status | Joins static capability data with live registry state |
+| `streaming/` | `StreamingExecutor` — the streaming twin of `RoutingExecutor` | Separate because streaming changes the failure model: a failure can arrive after the client has rendered 400 tokens, so buffer resets, switch ordering, and the ban on in-place retry have no analogue in the request/response path |
+| `routing/` | `RoutingService` (request → decision) and `RoutingExecutor` (walk the chain, retry, fail over) | Both are orchestration over ports. Ranking stays in `domain/routing/` and I/O mechanics in `infrastructure/routing/`, so neither leaks into the other |
 | `providers/` | `ProviderManager` — owns the discover → load → construct → register → watch sequence | The sequence is orchestration with defined ordering and failure semantics, which is what a use case is. None of the five infrastructure pieces it drives knows the sequence, so each stays independently testable |
 | `health/` | `CheckLiveness`, `CheckReadiness`, `GetVersion` | Health is orchestration, not policy: readiness aggregates independent probes by criticality and applies the draining rule. Keeping it here — rather than in the controller — is what makes "Redis down must not empty the load balancer" a unit test instead of an integration test |
 | `admin/` | Health probes, provider enable/disable, metrics access | Separated so admin operations are obvious in review and easy to gate |
@@ -182,6 +200,14 @@ real implementation of the same port — rather than `if (redis)` branches in
 callers — is what makes the degraded path testable
 ([13](13-deployment.md#degradation-matrix)). `createCache.js` picks between them
 once, at composition time, so no caller ever learns which one it got.
+
+### `routing/`
+
+`ProviderInvoker` runs one attempt with a deadline and an abort signal, measures
+it, and normalises whatever was thrown into the failure taxonomy.
+`RegistrySnapshotSource` freezes live registry state into the immutable
+`HealthSnapshot` the pure policy consumes — the seam between mutable
+infrastructure and pure domain.
 
 ### `system/`
 

@@ -26,7 +26,11 @@ gantt
   P2a Provider framework   :done, p2a, after p0, 1w
   P2b Provider adapters    :p2b, after p1, 2w
   section Product
-  P3 Chat and streaming    :p3, after p2b, 3w
+  P3a Routing engine       :done, p3a, after p2a, 1w
+  P4 Context engine        :done, p4, after p3a, 1w
+  P5 Streaming engine      :done, p5, after p4, 1w
+  P6 Provider execution    :done, p6, after p5, 1w
+  P3b Chat endpoints       :p3, after p6, 2w
   P4 Persistence and API   :p4, after p3, 2w
   section Production
   P5 Provider expansion    :p5, after p4, 2w
@@ -214,7 +218,218 @@ registry, health system, and the shared contract test suite.
 
 ---
 
-## Phase 3 — Chat and streaming
+## Phase 3a — Routing engine ✅ *delivered*
+
+**Effort: 1 week** · **Depends on: Phase 2a**
+
+Split from Phase 3 for the same reason Phase 2 split: the routing engine is
+provable against the mock adapter, with no network and no streaming. Retry,
+failover, circuit-breaker integration, and the whole decision table are verified
+before a single real API call exists.
+
+| # | Deliverable |
+|---|---|
+| 3a.1 | ✅ `RoutingPolicy` — pure ranking, hard filter, the decision table |
+| 3a.2 | ✅ `HealthSnapshot` — the frozen fleet view the policy consumes |
+| 3a.3 | ✅ `RetryPolicy` — retryable kinds, backoff with full jitter, `Retry-After` |
+| 3a.4 | ✅ `RoutingService` — requirement derivation, decision logging and metrics |
+| 3a.5 | ✅ `RoutingExecutor` — retry, failover, switch policies, aggregate budget |
+| 3a.6 | ✅ `ProviderInvoker` — per-attempt deadline, cancellation, error normalisation |
+| 3a.7 | ✅ Routing metrics and the `routing.decided` log line |
+| 3a.8 | ✅ Unit, integration and contract coverage |
+
+**Found during implementation, and fixed:** a fallback chain could hold two
+models from the same provider, making failover a no-op that still spent the
+attempt budget; and `Retry-After` was being clipped by the backoff cap, which
+retries earlier than a provider asked for.
+
+**Not included:** streaming, conversations, AI endpoints. Those remain Phase 3b.
+
+---
+
+## Phase 4 — Context engine ✅ *delivered*
+
+Token estimation with per-conversation calibration, budgeting, the five-stage
+trimming pipeline, deterministic extractive compression, memory injection slots,
+and the `ContextReport`. Pure and deterministic throughout.
+
+**Found by tests:** a small window plus a default `maxTokens` produced a zero
+prompt budget; an oversized pinned message was dropped rather than truncated,
+violating a documented invariant.
+
+**Deferred:** model-generated summarisation, RAG retrieval (the port exists with
+a null implementation).
+
+---
+
+## Phase 5 — Streaming engine ✅ *delivered*
+
+`StreamSession`, the SSE parser, and `StreamingExecutor` with mid-stream
+detection, retry, failover, per-attempt buffer reset, stall timeouts and
+cancellation.
+
+**Found by tests:** a failed attempt forwarded its `done` to the client before
+the empty-stream check ran, so the client finalised a message and then received
+a second `start`.
+
+**Deferred:** SSE transport wiring (needs the chat endpoint, Phase 7) and
+resumable streams.
+
+---
+
+## Phase 6 — Real provider execution ✅ *delivered*
+
+Eight adapters — Gemini native, and Groq, DeepSeek, Qwen, Mistral, OpenRouter,
+GLM and NVIDIA on the shared OpenAI dialect — plus the shared `HttpClient`,
+error mapping, capability declarations and the cost table.
+
+**Found by tests:** an already-aborted request was still being dispatched,
+burning a quota unit for output nobody would read.
+
+**Deferred:** live verification against real endpoints with real keys, which is
+the remaining gate before these are production-supported.
+
+---
+
+## Phase 7 — Backend cutover ✅ *delivered*
+
+The legacy `server.js` tree is gone; the hexagonal backend is the only backend.
+`ChatOrchestrator` sequences context → routing → execution → persistence for
+send, stream, regenerate and continue. SSE transport with backpressure and
+keep-alives. Conversation domain, both repository implementations, and the full
+thread lifecycle.
+
+**Found by tests:** `req.on("close")` fires when the request *body* finishes
+reading, so every request cancelled itself; regenerate truncated twice and then
+could not find its own message; per-request settings persisted onto new threads;
+shutdown blocked on a never-connected Mongo.
+
+**Deferred:** auth (Phase 8) — every endpoint currently treats `ownerId` as
+null, and the scoping is written but unexercised.
+
+---
+
+## Phase 8 — Security and authentication ✅ *delivered*
+
+*This is the phase described as "Phase 6 — Security and authentication" further
+down. Delivery order diverged from the planned numbering when the platform
+foundation was inserted ahead of the domain core; the deliverable list is
+unchanged.*
+
+JWT on RS256 with 15-minute access tokens and rotating refresh tokens, reuse
+detection, and a `jti` denylist for immediate revocation. Argon2id password
+hashing with rehash-on-login. Roles as a permission table, enforced per route.
+Layered sliding-window rate limits. An append-only audit log. Owner scoping
+hardened from "permissive when null" to strict, at the query, in both
+repositories.
+
+**Found by tests, and each was a real defect:**
+
+- **Nobody could use the account they had just created.** `iat` is seconds and
+  `passwordChangedAt` is milliseconds; comparing them directly rejected every
+  token minted in the same second as the account.
+- **A supplied thread id could take over another user's conversation.** The
+  chat orchestrator created a thread for any id it could not find *for this
+  owner*, and the save upserted by id alone — so sending to a stranger's thread
+  id overwrote their conversation. Now a 404, with the owner in the save filter
+  as the structural backstop.
+- **A rate-limit counter outage silently chose "fail open" for every rule**,
+  including sign-in, because the cache reported a plausible count instead of
+  reporting that it could not count.
+- **`null` owner meant "show everything".** Harmless with no accounts; a full
+  cross-user disclosure with them.
+
+**Deferred, and stated rather than implied:** BYOK key *consumption* (the
+encryption is built and tested; threading a per-request credential through the
+router changes `ProviderPort` and belongs with provider expansion), the global
+per-provider rate limit, and per-user token budgets (which need usage records
+that do not exist yet).
+
+---
+
+## Phase 9 — Observability ✅ *delivered*
+
+*Planned as "Phase 7 — Observability" below; delivered ninth. Deliverables
+unchanged.*
+
+Tracing with tail-based sampling and W3C propagation, written in process rather
+than through an OpenTelemetry SDK
+([ADR-024](15-decisions.md#adr-024--tracing-is-collected-in-process-not-through-an-opentelemetry-sdk)).
+Usage records per provider attempt, priced from the versioned table at the
+moment incurred. The full metric set. Grafana dashboards, Prometheus alert
+rules, and a runbook per paging alert. Content logging as an audited operator
+action.
+
+**Found before anything was written:** **seven metrics were being emitted and
+silently discarded** because they had never been declared in the catalogue —
+`nova_stream_ttft_seconds`, `nova_stream_duration_seconds`, all four context
+metrics, and `nova_provider_health`. Nothing failed; Prometheus simply never saw
+them. The first person to notice would have been someone mid-incident looking at
+a panel reading "No data". The fix is three static checks that now run in CI:
+emitted ⊆ declared, declared ⊆ emitted, and everything `ops/` queries exists.
+
+**Found by tests:** a usage assertion went intermittently red because an
+unscoped record list sorts newest-first, so two attempts a millisecond apart
+came back reversed — the failover story must be read by trace id, which is the
+query that sorts by attempt.
+
+**Deferred, and stated rather than implied:** an OTLP exporter (the interface is
+there; the day a flame graph is wanted, `LogSpanExporter` is replaced without
+touching an instrumented call site), automatic instrumentation of the HTTP and
+database clients, the free-tier headroom panel (providers do not expose
+remaining quota, and inferring it is a separate piece of work that must be
+labelled an estimate), and the monthly usage rollup that follows the 90-day TTL.
+
+---
+
+## Phase 10 — Hardening and launch ✅ *delivered*
+
+*Planned as "Phase 8 — Hardening and launch" below; delivered tenth.*
+
+Production container (non-root, read-only root, tini, health-checked), Compose
+for development, Kubernetes manifests with the SSE-specific ingress settings,
+a build-once/promote pipeline with staging, a human approval gate and automatic
+rollback, the five load scenarios, the five chaos exercises, encrypted backups
+with a **verified** restore, and nine runbooks.
+
+**Found by the chaos exercises — a real routing defect.** Exercise 5 saturates
+one provider's rate limit and asserts that traffic shifts away. It did not. The
+retry policy tried a same-provider retry *before* considering failover, so a
+rate-limited provider consumed all three attempts and the request failed with
+429 while a healthy provider sat idle. The fix distinguishes a rate limit from
+the other retryable kinds: a timeout is a blip worth an immediate second
+attempt, while a rate limit is a *stated refusal* with an enforced wait, so with
+an alternative available the router now fails over immediately. This is the
+exercise the testing document calls the one that validates the product thesis,
+and it was failing.
+
+**Found by the load harness.** The first heap assertion failed at 2.0× growth —
+which turned out to be the *test harness* retaining every log line and every
+span tree, not a server leak. Worth recording because the tempting fix was to
+raise the threshold, which would have disabled the check permanently. Telemetry
+retention is now off for load runs and the substituted stores are drained
+mid-run, so the measurement is about the server. The heap is flat.
+
+**Also found:** the harness memoised the sign-in *result* rather than the
+promise, so ten concurrent requests all registered and nine got a duplicate-email
+conflict — a harness race that reads exactly like a product bug.
+
+**Stream draining, which the deliverable named and the code did not do.**
+Shutdown previously aborted every in-flight generation. It now waits out most of
+the grace period and aborts only the stragglers, so a rolling deploy no longer
+cuts a conversation that was two seconds from finishing.
+
+**Deferred, and stated rather than implied:** the container image is unbuilt —
+the Docker daemon was unavailable in this environment, so the Dockerfile is
+reviewed but not executed, and the first `docker build` should be treated as
+unverified. Load tests run at reduced scale in CI (`LOAD_SCALE` runs the
+documented ten-minute profile against staging), and the chaos exercises use
+substituted failures in CI while the pipeline runs the same file against
+staging, where the failures are real processes.
+
+---
+
+## Phase 3b — Chat and streaming
 
 **Effort: 3 weeks** · **Depends on: Phase 2**
 

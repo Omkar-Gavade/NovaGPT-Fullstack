@@ -78,10 +78,47 @@ export function testConfig(overrides = {}) {
       requestTimeoutMs: 30_000,
       corsOrigins: "*",
     },
-    log: { level: "silent", pretty: false },
+    log: { level: "silent", pretty: false, content: false },
     mongo: { serverSelectionTimeoutMs: 100, maxPoolSize: 1 },
     redis: { enabled: false, url: null, connectTimeoutMs: 100, keyPrefix: "test:" },
+    persistence: { inMemory: true },
+    routing: {
+      maxCandidates: 3,
+      maxAttempts: 3,
+      maxRetriesPerProvider: 2,
+      retryBaseDelayMs: 1,
+      retryMaxDelayMs: 4,
+      attemptTimeoutMs: 5000,
+      overallTimeoutMs: 30_000,
+      priorities: {},
+    },
     metrics: { enabled: true, path: "/api/v1/admin/metrics", defaultLabels: {} },
+    auth: {
+      // On by default, so the suite exercises the same guarded routes
+      // production serves rather than an unprotected variant of them.
+      required: true,
+      allowRegistration: true,
+      issuer: "novagpt-test",
+      audience: "novagpt-api",
+      accessTtlMs: 900_000,
+      refreshTtlMs: 3_600_000,
+      privateKey: null,
+      publicKey: null,
+      previousPublicKey: null,
+      cookie: { name: "nova_refresh", domain: null, secure: false },
+      password: { minLength: 12 },
+      lockout: { threshold: 5, baseDelayMs: 1000, maxDelayMs: 4000 },
+      encryptionKey: null,
+    },
+    // Deliberately far above anything a test sends. A suite that trips a
+    // production limit fails for a reason unrelated to what it asserts; the
+    // limits themselves are tested directly, with rules built for the purpose.
+    rateLimit: {
+      anonymousPerMinute: 100_000,
+      authPerMinute: 100_000,
+      chatPerMinute: 100_000,
+      chatPerHour: 100_000,
+    },
     shutdown: { graceMs: 1000, drainDelayMs: 0 },
     ...overrides,
   };

@@ -126,7 +126,18 @@ to Groq?" answerable in one query instead of unanswerable forever.
 
 ## Tracing
 
-OpenTelemetry, W3C Trace Context propagation.
+W3C Trace Context propagation, with the collection and sampling written in this
+repository rather than pulled in from an OpenTelemetry SDK
+([ADR-024](15-decisions.md#adr-024--tracing-is-collected-in-process-not-through-an-opentelemetry-sdk)).
+
+**Implemented in** [`Tracer`](../../Backend/src/infrastructure/telemetry/Tracer.js)
+and [`SamplingPolicy`](../../Backend/src/domain/observability/SamplingPolicy.js).
+Spans nest through async local storage, so no function signature carries a
+parent. Sampled traces are exported as `trace.sampled` log events — the log
+pipeline already exists, already redacts, and already retains, and a trace that
+lands beside the log lines from the same request is more useful during an
+incident than one in a separate tool. Introducing a tracing backend means
+implementing the same one-method exporter interface.
 
 ### Span structure
 
@@ -190,6 +201,30 @@ tracing backend expensive and slow.
 Head-based sampling decides at the start, when we know nothing — and therefore
 throws away exactly the traces that turn out to matter.
 
+### Amended during implementation
+
+**"Slow" is a configured threshold, not a live p95.** A percentile computed from
+the traces you decided to keep is circular. `TRACE_SLOW_MS` is a number an
+operator can reason about and change.
+
+**A 5xx is an error even when nothing threw.** The HTTP layer records the status
+as a span *attribute* rather than failing the root span, because ending a span
+early to mark it would freeze its duration before the response finished. The
+sampler reads the attribute. 4xx is deliberately not an error: keeping every
+validation failure at 100% would bury the traces that are about the system.
+
+**A successful failover is kept at 100%.** It carries no error, so nothing else
+would distinguish it from an ordinary request — and it is one of the most
+informative traces the system produces. The executors mark the root span with
+`routing.switched` for exactly this.
+
+**Traces are bounded at `TRACE_MAX_SPANS`, and say how many they dropped.** A
+retry storm must not grow a trace without limit, and a truncated trace must not
+pretend to be whole.
+
+**First token is an event, not a span.** A child span would imply generation
+paused there. It is a point in time, and `stream.first_token` carries the TTFT.
+
 ## Metrics
 
 Prometheus format, exposed at `/api/v1/admin/metrics`.
@@ -249,6 +284,29 @@ heuristic in [06](06-context-engine.md#token-estimation). Consistent
 underestimation causes provider rejections; consistent overestimation wastes
 context. Without this metric, the estimator's accuracy is an assumption nobody
 ever checks.
+
+### What is implemented
+
+Every metric in the tables above exists and is emitted. That sentence needed a
+mechanism behind it: **seven of them were emitted and silently discarded**
+because they had never been declared — including `nova_stream_ttft_seconds`,
+the one this document calls the metric that matters most for perceived speed.
+Nothing failed. Prometheus simply never saw them, and the first person to notice
+would have been someone during an incident, looking at a panel reading "No data".
+
+[`test/unit/metricsCatalog.test.js`](../../Backend/test/unit/metricsCatalog.test.js)
+is the mechanism, and it checks three directions:
+
+| Check | Catches |
+|---|---|
+| Every emitted name is declared | The defect above |
+| Every declared name is emitted | A panel that always reads zero, which looks like an idle system |
+| Every name referenced by `ops/` exists | An alert that can never fire, and a panel that shows "No data" |
+
+`nova_wasted_tokens_total` and `nova_traces_sampled_total` are additions beyond
+the tables above: the first is what makes "wasted spend" a measured number, and
+the second is what stops "we saw fewer error traces" being confused with "there
+were fewer errors".
 
 ### Cardinality discipline
 
@@ -326,6 +384,27 @@ price table.
 | Prices live in a versioned table with an effective date | Provider prices change; historical cost must not retroactively change |
 | Cost is attributed to user, thread, and provider | Enables per-user budgets and per-feature cost analysis |
 
+**Implemented** as [`UsageRecord`](../../Backend/src/domain/usage/UsageRecord.js)
+plus [`UsageRecorder`](../../Backend/src/application/usage/UsageRecorder.js),
+written from both executors — the orchestrator would have been the tidier place
+and is the wrong one, because only the executors see the attempts that *failed*.
+
+Three distinctions the implementation holds and a naive version would not:
+
+- **`null` cost is not zero cost.** An unpriced model records `null`; collapsing
+  it to `0` would silently understate spend every time a model ships without a
+  price. Free-tier models record a real `0`, and their tokens are still counted.
+- **Cancelled is not failed.** Lumping them together makes "wasted spend" read
+  as provider unreliability, pointing tuning at the retry policy when the cause
+  is users closing tabs.
+- **Recording never fails a request.** The write is off the critical path and
+  its failure is logged at `error`. Refusing a user's answer because the spend
+  row could not be written trades a reporting gap for an outage.
+
+Records are read **by trace id**, which sorts by attempt — an unscoped list
+sorts newest-first, and two attempts a millisecond apart then come back
+reversed.
+
 ## Alerting
 
 **Alert on symptoms users feel, not on causes.** A provider going down is not an
@@ -363,6 +442,17 @@ that is woken for non-events stops responding to real ones.
 means, how to confirm it, what to do, and how to verify recovery. An alert
 without a runbook is a notification that someone else's night is ruined, with no
 information about how to fix it.
+
+The rules live in [`ops/prometheus/alerts.yml`](../../ops/prometheus/alerts.yml)
+and the runbooks in [`ops/runbooks/`](../../ops/runbooks/).
+[`test/unit/alerting.test.js`](../../Backend/test/unit/alerting.test.js) asserts
+the rule rather than trusting it: every paging alert links a runbook, every
+linked runbook exists and contains all four sections, no per-provider alert
+pages, and every paging alert has a `for` clause — except a rejected platform
+key, which pages immediately because nothing recovers without a human.
+
+Dashboards are in [`ops/grafana/`](../../ops/grafana/): providers, health, cost
+and context, matching the four described above.
 
 ## Retention and cost control
 

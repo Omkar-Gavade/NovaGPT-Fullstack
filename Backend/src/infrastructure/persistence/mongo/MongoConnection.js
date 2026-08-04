@@ -114,7 +114,13 @@ export class MongoConnection {
     this.stopped = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
-    if (this.client.connection?.readyState !== 0) {
+
+    // Only a *connected* driver is disconnected. Calling `disconnect()` while
+    // the driver is still in its connect-retry loop can block indefinitely,
+    // which turns a graceful shutdown into a wait for the grace deadline —
+    // exactly the outcome the shutdown sequence exists to avoid. A driver that
+    // never connected has nothing to close.
+    if (this.client.connection?.readyState === 1) {
       await this.client.disconnect();
       this.logger.info("mongo.disconnected");
     }

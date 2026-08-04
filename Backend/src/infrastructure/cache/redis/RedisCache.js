@@ -100,11 +100,12 @@ export class RedisCache {
       return count;
     } catch (error) {
       this.logger.warn("redis.incr_failed", { key, error });
-      // Reported as the first hit in the window. Failing open is correct for
-      // rate limiting: refusing all traffic to protect a limit is a
-      // self-inflicted outage worse than the abuse it prevents
-      // (docs/backend/10-security.md#rate-limiting).
-      return 1;
+      // `null`, not `1`. Whether an unavailable counter should fail open or
+      // fail closed is a *policy* question, and the answer differs per rule:
+      // chat fails open, authentication fails closed
+      // (docs/backend/10-security.md#rate-limiting). Reporting a plausible
+      // count here would hide the outage and silently pick "open" for both.
+      return null;
     }
   }
 

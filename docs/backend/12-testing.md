@@ -292,6 +292,22 @@ Run against staging, quarterly:
 provider does not shift traffic, the health-driven ranking is not working and the
 entire multi-provider premise is decorative.
 
+### Automated, not quarterly
+
+All five live in [`test/chaos/chaos.test.js`](../../Backend/test/chaos/chaos.test.js)
+and run on every commit. A quarterly manual exercise is the one that gets
+skipped in a busy quarter — and that is the quarter the behaviour regressed. The
+deploy pipeline runs the same file against staging, where the failures are real
+processes rather than substituted ones.
+
+**Exercise 5 caught a real defect the first time it ran.** The retry policy
+attempted a same-provider retry before considering failover, so a rate-limited
+provider consumed the entire attempt budget and the request failed with 429
+while a healthy provider sat idle — the exact opposite of the documented
+requirement. The distinction the fix draws: a timeout is a blip worth an
+immediate second attempt; a rate limit is a stated refusal with an enforced
+wait, so with an alternative available the router fails over rather than waiting.
+
 ## Performance testing
 
 | Test | Target |
@@ -323,6 +339,69 @@ in single-request testing.
 active stream holds a buffer, a reader, and an open socket. A slow leak invisible
 at 10 concurrent streams becomes an out-of-memory kill at 200 — and the crash
 looks unrelated to its cause.
+
+### Implemented
+
+[`test/load/`](../../Backend/test/load/), run with `npm run test:load`. Kept out
+of the default suite: these take tens of seconds and measure timing, which is
+the wrong shape for a pre-commit run. `LOAD_SCALE=20` runs the documented
+profile against staging.
+
+The harness is written here rather than being k6 or autocannon for two reasons.
+The scenarios need an SSE-aware client that counts *frames* rather than bytes,
+and the assertions are about the server process's heap and event-loop lag, which
+an external tool cannot see. Throughput numbers from a generator sharing a laptop
+with the server are noise anyway.
+
+**The heap assertion took three attempts, and each failure was the test rather
+than the server.** Worth recording in full, because at every step the tempting
+fix was to loosen the threshold — which would have left a check that runs, looks
+green, and catches nothing.
+
+| Attempt | Reported | What was actually wrong |
+|---|---|---|
+| Last sample ÷ first sample | — | A single sample either side of a garbage collection makes a two-point comparison meaningless |
+| Second-half **mean** ÷ first-half mean | 2.0×, then 1.4–1.8× run to run | The harness retained every log line and every span tree. Fixed by turning telemetry retention off for load runs and draining the substituted stores mid-run — then the *metric* proved too noisy: peaks track allocation rate and move with wherever GC lands |
+| Second-half **floor** ÷ first-half floor | 2.0×, consistently | The right metric — a sawtooth's troughs are retained memory and only a leak raises them — measured across the ramp. V8 growing its heap to fit the working set read as a leak |
+| Floor, after a warm-up phase | 1.0–1.1× | Correct. Threshold now 1.3×, which is tight *because* the metric is stable |
+
+The general lesson is the one worth keeping: **a noisy metric forces a threshold
+loose enough to be useless.** Fixing the measurement is what buys a tight bound.
+
+## Security testing
+
+Authorization defects are **omissions**, which makes them different from every
+other class of bug in this document. A suite that tests the endpoints someone
+remembered to protect proves nothing about the one they forgot — and the one
+they forgot is the incident.
+
+So the authorization suite
+([`test/e2e/authorization.test.js`](../../Backend/test/e2e/authorization.test.js))
+is a **generated sweep**, not a sample. Every route that names a resource is in
+one table, and every entry is asserted to answer `404` for a second account.
+Adding a route without adding it to that table is the mistake the file exists to
+catch.
+
+| Suite | Proves |
+|---|---|
+| `test/unit/jwt.test.js` | `alg: none`, algorithm confusion, foreign keys, expiry, issuer, key rotation. Mostly attacks, not features |
+| `test/unit/identity.test.js` | Password and email rules, lockout escalation, the hash never reaching the API shape, Argon2id round-trip and rehash detection |
+| `test/unit/rateLimit.test.js` | Window arithmetic, boundary carry-over, per-subject isolation, and both failure modes |
+| `test/unit/envelope.test.js` | Envelope encryption, tamper detection, master-key rotation, cookie flags |
+| `test/e2e/authApi.test.js` | Registration, login, refresh **rotation and reuse detection**, logout revocation, password change ending other sessions |
+| `test/e2e/authorization.test.js` | The IDOR sweep, the response-surface credential sweep, operator-route permissions |
+| `test/integration/rateLimit.http.test.js` | That the rules are mounted, on the right routes, counting the right subject |
+
+Two properties are asserted structurally rather than by inspection, because both
+are things review misses:
+
+- **No response anywhere contains a credential.** A single regex over the bodies
+  of every read endpoint, including an error body. This is the check that would
+  have caught a serialiser spreading an internal object (T1).
+- **The test password hasher is a real hasher.** A stub returning the password
+  would let every authentication test pass while the code under test compared
+  plaintext, so `FastHasher` is scrypt with the cost turned down — salted,
+  derived, constant-time compared.
 
 ## Regression testing
 

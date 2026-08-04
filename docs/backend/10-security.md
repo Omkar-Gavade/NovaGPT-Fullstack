@@ -82,6 +82,38 @@ for the entire product, contradicting "degrade, don't collapse"
 narrowly: without Redis, revocation is delayed by at most the access-token
 lifetime; authentication itself keeps working.
 
+### Amended during implementation
+
+**The `type` claim is mandatory and checked on every verification.** Without it a
+refresh token is a perfectly valid signed token and would be accepted in an
+`Authorization` header — a 30-day bearer credential, which is exactly what the
+15-minute access lifetime exists to prevent. Asserted in
+[`test/e2e/authApi.test.js`](../../Backend/test/e2e/authApi.test.js).
+
+**Access-token verification does load the account.** The original design said
+signature-only, with no per-request lookup. Implementation added one indexed
+`findById`, because two guarantees are worth more than it costs:
+
+- a disabled account stops working immediately rather than up to 15 minutes later;
+- a password change evicts tokens issued before it (`iat` is compared against
+  `passwordChangedAt`), which is the single thing a user changing their password
+  is trying to achieve.
+
+The deviation is deliberate and bounded: one indexed lookup against a request
+that spends seconds inside a model. If it ever shows up in a latency profile, the
+answer is to cache the account's `passwordChangedAt` and `disabledAt` in the
+cache port — not to drop the check.
+
+**Password changes and lockouts are compared at second granularity**, because
+`iat` is seconds. Comparing a second-precision claim against a millisecond
+timestamp rejects every token minted in the same second as the account — which is
+every token registration hands out.
+
+**Lockout escalates rather than latching.** A permanent lock after N failures
+hands an attacker a denial-of-service primitive: knowing an address is enough to
+lock its owner out indefinitely. Escalating delays (30 s, doubling to a 15-minute
+ceiling) make stuffing uneconomic while a real user who mistyped waits seconds.
+
 ## Authorization
 
 **Resource ownership is enforced in the use case, not the controller.**
@@ -122,6 +154,32 @@ resource exists, which permits enumeration. `404` reveals nothing.
 Deliberately flat. Fine-grained RBAC before there is a second kind of user is
 complexity with no requirement behind it; the role field exists so adding one is
 cheap.
+
+Routes name a **permission**, not a role (`requirePermission(ADMIN_METRICS)`), so
+a fourth role is a row in the grant table rather than an edit to every route that
+mentioned `admin`.
+
+**The first registered account is the admin** ([ADR-023](15-decisions.md#adr-023--the-first-registered-account-is-the-operator)).
+Every alternative either ships a well-known credential or requires a manual
+database edit to start using the product.
+
+### What "scoped by owner" actually means
+
+`null` is an owner, not a wildcard
+([ADR-022](15-decisions.md#adr-022--null-is-an-owner-not-a-wildcard)). Three
+mechanisms hold the line, and none of them is a review rule:
+
+| Mechanism | What it stops |
+|---|---|
+| `Principal.anonymous()` — `req.principal` is always an object | A missing null check becoming "no scope" |
+| The owner is in every repository **filter**, including `save()` | A caller upserting over another user's conversation with a supplied id |
+| A supplied thread id that exists under another owner is a **404** | Thread takeover on create, and id enumeration |
+
+The sweep in
+[`test/e2e/authorization.test.js`](../../Backend/test/e2e/authorization.test.js)
+walks every endpoint that names a resource. It is a list rather than a sample on
+purpose: authorization defects are *omissions*, so testing the endpoints someone
+remembered to protect proves nothing.
 
 ## Secret management
 
@@ -217,6 +275,20 @@ That last rule is easy to miss and produces a severe, hard-to-diagnose bug: one
 user pastes an expired key, the breaker opens on `auth`, and every user loses
 that provider.
 
+**Status.** The encryption half is built and tested
+([`EnvelopeCipher`](../../Backend/src/infrastructure/security/EnvelopeCipher.js)):
+per-record data keys, AES-256-GCM, master-key rotation that re-wraps keys without
+touching a payload, and a `mask()` that is the only thing ever returned about a
+stored key. It is wired into the composition root and constructed **only** when
+`ENCRYPTION_MASTER_KEY` is set — generating one would encrypt user secrets under
+a key that dies with the process, which is worse than refusing the feature.
+
+The *consumption* half — a per-request credential threaded through the router
+into an adapter's headers — is not built, and no BYOK endpoints are exposed. It
+changes `ProviderPort`, which the shared contract suite pins across nine
+adapters, so it belongs with provider expansion rather than here. Shipping a
+"save your key" endpoint whose keys nothing uses would be a fake feature.
+
 ## Rate limiting
 
 Layered, because the layers defend different things.
@@ -252,6 +324,23 @@ resource; refusing all traffic to protect quota is a self-inflicted outage that
 is worse than the abuse it prevents. **Fail-closed for auth endpoints**, where
 the thing being protected is credentials, and refusing logins for a few minutes
 is better than permitting unlimited credential stuffing.
+
+That asymmetry forced a change to `CachePort`. `increment` used to report `1` when
+Redis was unreachable — a plausible-looking count that hid the outage and quietly
+chose "open" for every rule. It now returns **`null`**, because *whether an
+uncountable request is permitted is a policy question the rule owns*, and the two
+rules answer it differently. The per-rule `failClosed` flag is the answer, and
+both branches are asserted.
+
+**What is implemented, and where.** The window arithmetic is pure
+([`RateLimitRule`](../../Backend/src/domain/security/RateLimitRule.js)) and the
+counting is I/O
+([`RateLimiter`](../../Backend/src/application/security/RateLimiter.js)), which is
+what makes every threshold and both failure modes testable without a Redis. The
+per-provider global limit and the per-user token budget are **not** built: the
+first belongs with the provider health system and the second needs usage records
+that do not exist yet. Both are still the right design; neither is claimed as
+present.
 
 ## Encryption
 
@@ -317,6 +406,20 @@ application's database user has insert permission on `audit_log` and no update o
 delete permission. An attacker with application-level code execution still cannot
 erase their trail (T12). Enforcement in code is defeated by the same compromise
 that made the log worth tampering with.
+
+The port has an `append` and a `query` and deliberately no update and no delete —
+not as the enforcement, but so a future reader does not add the missing method
+and quietly remove the property. The in-process implementation used by tests has
+the same shape, because a test double that permitted deletion would let a test
+assert behaviour the real implementation cannot have.
+
+**A failed audit write never fails the request.** An audit trail is a derivative
+concern; refusing a login because the trail could not be written trades a
+visibility gap for an availability outage. It is logged at `error` level, which
+is what makes the gap noticed.
+
+**Retention is a TTL index, not a job.** One year, applied by Mongo. A cleanup
+job that has to be remembered is a cleanup job that eventually is not.
 
 ## Security in the development lifecycle
 

@@ -1,0 +1,18 @@
+# Everything by default; the Dockerfile opts in to what it needs. An allowlist
+# cannot leak a file nobody thought to exclude — and `.env` is the file that
+# would otherwise get baked into a layer, where it persists even if a later
+# layer deletes it (docs/backend/13-deployment.md#container-design).
+*
+
+!Backend/package.json
+!Backend/package-lock.json
+!Backend/src
+!Backend/test
+!ops
+
+# Re-excluded inside the allowed paths.
+**/node_modules
+**/.env
+**/.env.*
+**/*.log
+**/.DS_Store

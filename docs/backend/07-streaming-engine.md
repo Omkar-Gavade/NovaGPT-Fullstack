@@ -66,7 +66,14 @@ are worse than defining an event type once.
 | `ping` | `{}` | Keep-alive | Every 15 s of silence |
 
 **Terminal invariant:** exactly one of `done` or `error` ends every stream. Never
-both, never neither. A client that receives neither is left with a spinner it can
+both, never neither.
+
+**A terminal event is withheld until the attempt is validated.** The executor
+emits `done` only after the attempt is known to have produced content — never
+from inside the attempt itself. Implementation found the alternative to be
+visibly broken: an empty stream forwarded its provider's `done`, the client
+finalised the message, and the retry then delivered a second `start`. The
+client has no way to recover from that. A client that receives neither is left with a spinner it can
 never resolve; a client that receives both cannot tell whether it succeeded.
 
 **Why `reasoning` is a distinct event from `delta`.** Reasoning models emit

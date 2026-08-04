@@ -240,6 +240,85 @@ export function runProviderContract({ name, create, model, scriptFailure, script
       });
     }
 
+    /* --------------------------- routability ------------------------------ */
+
+    /**
+     * The router makes every retry and failover decision from `failureKind`
+     * alone, and it reads that field off whatever the invoker hands back. These
+     * cases assert the adapter holds up its end of that contract *through* the
+     * invoker, which is the path the router actually uses — an adapter can pass
+     * every error-mapping case above and still break routing if its failures do
+     * not survive the invoker boundary.
+     */
+    if (scriptFailure) {
+      test("failures reach the router carrying a failureKind", async () => {
+        const { ProviderInvoker } = await import(
+          "../../src/infrastructure/routing/ProviderInvoker.js"
+        );
+        const { SystemClock } = await import("../../src/infrastructure/system/SystemClock.js");
+
+        const provider = await build();
+        scriptFailure(provider, "quota");
+
+        const outcome = await new ProviderInvoker({ clock: new SystemClock() }).run({
+          provider,
+          model: { id: model, provider: provider.id },
+          invoke: (p, m, options) => p.generate([{ role: "user", content: "x" }], options),
+        });
+
+        assert.equal(outcome.ok, false);
+        assert.equal(
+          outcome.error.failureKind,
+          "quota",
+          "the router branches on failureKind; without it every failure looks the same"
+        );
+        assert.ok(Number.isFinite(outcome.latencyMs), "latency feeds ranking and must be measured");
+      });
+
+      test("a success reports the latency that feeds ranking", async () => {
+        const { ProviderInvoker } = await import(
+          "../../src/infrastructure/routing/ProviderInvoker.js"
+        );
+        const { SystemClock } = await import("../../src/infrastructure/system/SystemClock.js");
+
+        const provider = await build();
+        const outcome = await new ProviderInvoker({ clock: new SystemClock() }).run({
+          provider,
+          model: { id: model, provider: provider.id },
+          invoke: (p, m, options) => p.generate([{ role: "user", content: "x" }], options),
+        });
+
+        assert.equal(outcome.ok, true);
+        assert.ok(Number.isFinite(outcome.latencyMs));
+      });
+    }
+
+    if (scriptDelay) {
+      test("the invoker's deadline maps to a timeout the router can fail over on", async () => {
+        const { ProviderInvoker } = await import(
+          "../../src/infrastructure/routing/ProviderInvoker.js"
+        );
+        const { SystemClock } = await import("../../src/infrastructure/system/SystemClock.js");
+
+        const provider = await build();
+        scriptDelay(provider, 5000);
+
+        const outcome = await new ProviderInvoker({
+          clock: new SystemClock(),
+          attemptTimeoutMs: 30,
+        }).run({
+          provider,
+          model: { id: model, provider: provider.id },
+          invoke: (p, m, options) => p.generate([{ role: "user", content: "x" }], options),
+        });
+
+        assert.equal(outcome.ok, false);
+        // Distinct from cancellation: a deadline is the provider being slow and
+        // is worth failing over; a cancellation is not worth anything.
+        assert.equal(outcome.error.failureKind, "timeout");
+      });
+    }
+
     /* ------------------------------ cancellation -------------------------- */
 
     if (scriptDelay) {

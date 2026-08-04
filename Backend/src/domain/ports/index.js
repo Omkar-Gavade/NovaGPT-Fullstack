@@ -12,3 +12,8 @@ export * from "./LoggerPort.js";
 export * from "./CachePort.js";
 export * from "./MetricsPort.js";
 export * from "./HealthProbePort.js";
+export * from "./UserRepositoryPort.js";
+export * from "./SessionRepositoryPort.js";
+export * from "./PasswordHasherPort.js";
+export * from "./TokenSignerPort.js";
+export * from "./AuditLogPort.js";

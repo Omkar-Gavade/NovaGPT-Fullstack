@@ -1,0 +1,28 @@
+# gitleaks configuration.
+#
+# Extends the default rule set rather than replacing it: the defaults cover the
+# provider key formats this platform actually handles (`sk-…`, `AIza…`, GitHub
+# PATs), and a hand-written replacement would silently lose them.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "novagpt-jwt-private-key"
+description = "A JWT signing key committed to the repository"
+# The one credential unique to this codebase. Everything else is a provider key
+# the default rules already recognise.
+regex = '''-----BEGIN (RSA )?PRIVATE KEY-----'''
+tags = ["key", "private"]
+
+[allowlist]
+description = "Paths that legitimately contain key-shaped text"
+paths = [
+  # Documents the *format* of every variable and holds the value of none.
+  '''Backend/\.env\.example''',
+  # Generates throwaway key pairs at run time; nothing here is ever real.
+  '''Backend/test/.*''',
+  '''Backend/src/infrastructure/security/JwtSigner\.js''',
+  # Prose about credentials, containing none.
+  '''docs/.*\.md''',
+]

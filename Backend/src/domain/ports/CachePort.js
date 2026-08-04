@@ -12,7 +12,10 @@
  * @property {(key: string) => Promise<unknown|null>} get
  * @property {(key: string, value: unknown, ttlMs?: number) => Promise<void>} set
  * @property {(key: string) => Promise<void>} del
- * @property {(key: string, ttlMs: number) => Promise<number>} increment  returns the new count
+ * @property {(key: string, ttlMs: number) => Promise<number|null>} increment  new count, or
+ *           `null` when the counter is unavailable. `null` is not "zero": whether an
+ *           uncountable request is permitted is a policy decision the caller owns
+ *           (docs/backend/10-security.md#rate-limiting).
  * @property {() => Promise<boolean>} isHealthy
  * @property {() => Promise<void>} close
  * @property {string} kind  "redis" | "memory" — surfaced so degradation is visible

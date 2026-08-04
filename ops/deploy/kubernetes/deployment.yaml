@@ -1,0 +1,135 @@
+# Production deployment.
+#
+# Kubernetes because it is the most demanding target, not because it is
+# required — the unit of deployment is an OCI container that reads its
+# configuration from the environment, and it runs the same on ECS, Fly, Render
+# or one VM with Compose (docs/backend/13-deployment.md#deployment-philosophy).
+#
+# The values below that are *not* boilerplate, and would break streaming if got
+# wrong, are commented individually.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: novagpt-api
+  labels: { app: novagpt-api }
+spec:
+  # Two, minimum. One is a single point of failure and makes zero-downtime
+  # deploys impossible.
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never drop below the current count during a roll: a stream cut by a
+      # deploy is the failure users meet far more often than any incident.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels: { app: novagpt-api }
+  template:
+    metadata:
+      labels: { app: novagpt-api }
+    spec:
+      # Must exceed SHUTDOWN_GRACE_MS plus the preStop sleep, or Kubernetes
+      # SIGKILLs the process mid-drain — cutting every stream instead of the
+      # stragglers, which is the exact outcome the drain exists to avoid.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: api
+          image: ghcr.io/novagpt/backend:latest
+          ports: [{ containerPort: 8080, name: http }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          envFrom:
+            - configMapRef: { name: novagpt-config }
+            - secretRef: { name: novagpt-secrets }
+          volumeMounts:
+            # The only writable path. `read_only` root plus a tmpfs is what
+            # blocks a persistence foothold after a compromise.
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            # Memory is the limit that matters: every active stream holds a
+            # buffer, a reader and an open socket, and a slow leak invisible at
+            # 10 concurrent streams is an OOM kill at 200.
+            limits: { memory: 1Gi }
+          # Liveness is process health only. Probing a dependency here would
+          # restart a perfectly good instance because Mongo blipped — which
+          # fixes nothing and drops every stream on it.
+          livenessProbe:
+            httpGet: { path: /live, port: http }
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          # Readiness *does* include dependencies: an instance that cannot reach
+          # Mongo should stop receiving chat traffic while still serving the
+          # catalog (docs/backend/13-deployment.md#degradation-matrix).
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          # Generous: the container connects to Mongo in the background and
+          # never blocks startup, so a slow first connection is not a failure.
+          startupProbe:
+            httpGet: { path: /live, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+          lifecycle:
+            preStop:
+              exec:
+                # Endpoint removal and SIGTERM race. Without this pause the
+                # process can stop accepting before the load balancer has
+                # noticed, and requests routed in that window are refused —
+                # which looks exactly like an outage on every deploy.
+                command: ["sleep", "5"]
+      volumes:
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: novagpt-api
+spec:
+  selector: { app: novagpt-api }
+  ports: [{ port: 80, targetPort: http, name: http }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: novagpt-api
+spec:
+  # A node drain must not take the whole service with it.
+  minAvailable: 1
+  selector:
+    matchLabels: { app: novagpt-api }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: novagpt-api
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: novagpt-api }
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+    # Concurrency, not CPU, is the real limit for a streaming service: Node can
+    # show moderate CPU while the event loop is saturated by many open streams.
+    - type: Pods
+      pods:
+        metric: { name: nova_active_streams }
+        target: { type: AverageValue, averageValue: "200" }
+  behavior:
+    scaleDown:
+      # Long, deliberately. Scaling in kills streams on the instance being
+      # removed, so a flapping autoscaler is a user-visible defect.
+      stabilizationWindowSeconds: 900

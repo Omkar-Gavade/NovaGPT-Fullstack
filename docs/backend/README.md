@@ -54,8 +54,8 @@ the reasoning behind it.
 
 | Property | Value |
 |---|---|
-| Phase | Backend planning — design only, no implementation |
-| Frontend | Frozen; the API contract in [09-api-design.md](09-api-design.md) is written to what the frontend already consumes |
+| Phase | Phases 0–8 delivered — platform, providers, routing, context, streaming, adapters, chat cutover, security and authentication |
+| Frontend | Migrated to `/api/v1`, including sign-in. The contract lives in [09-api-design.md](09-api-design.md) |
 | Providers in scope | 8 (see [01-system-overview.md](01-system-overview.md#supported-providers-phase-1)) |
 | Owner | NovaGPT backend maintainers |
 | Change process | Amend the document, record the reasoning in [15-decisions.md](15-decisions.md), then implement |

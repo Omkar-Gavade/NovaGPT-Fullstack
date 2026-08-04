@@ -86,13 +86,63 @@ which removes CSRF as a concern for the API surface entirely.
 
 Full threat analysis in [10](10-security.md).
 
+### Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/v1/auth/register` | Create an account. `201`, with an access token and a refresh cookie |
+| `POST` | `/api/v1/auth/login` | Sign in |
+| `POST` | `/api/v1/auth/refresh` | Exchange the refresh cookie for a new pair. Rotates |
+| `POST` | `/api/v1/auth/logout` | End this session, or `{"everywhere": true}` for all of them |
+| `GET` | `/api/v1/auth/me` | The current account |
+| `POST` | `/api/v1/auth/password` | Change the password. Ends every other session |
+
+Every success returns the same shape. **The refresh token is never in the body** —
+it is set as an httpOnly cookie, so a client that can read it has already lost:
+
+```json
+{
+  "data": {
+    "user": { "id": "…", "email": "you@example.com", "role": "user", "createdAt": "…" },
+    "accessToken": "eyJ…",
+    "expiresIn": 900,
+    "tokenType": "Bearer"
+  }
+}
+```
+
+`/auth/refresh` is deliberately **not** behind the authentication guard: the
+access token is expected to have expired by the time a client calls it, which is
+the entire point of the endpoint.
+
+A rejected token produces `401` with `WWW-Authenticate: Bearer`, so a client can
+distinguish a missing token from an expired one without parsing prose. Wrong
+credentials, an unknown account and a disabled account all return the *same*
+message — anything else is an account-enumeration oracle.
+
 ### Anonymous access
 
-`GET /api/v1/models` and `GET /api/v1/share/:shareId` are public. Everything else
-requires authentication. Anonymous endpoints are rate-limited by IP.
+`GET /api/v1/models`, `GET /api/v1/providers` and `GET /api/v1/share/:shareId`
+are public, as are the `/auth` routes themselves. Everything that touches a
+conversation requires authentication. Anonymous endpoints are rate-limited by IP.
 
 *Why the model catalog is public:* the landing page renders it before login, and
 it contains no user data and no secrets — only what the deployment can do.
+
+*Why a share link needs no account:* the link **is** the grant. Requiring one
+would break every link that has already been sent.
+
+An invalid token does not break a public route. Establishing identity and
+enforcing it are separate middleware, because the failure mode of a single
+enforcing middleware is a *forgotten exemption*, and that fails open for exactly
+the route someone forgot.
+
+### Operator surfaces
+
+`GET /api/v1/admin/metrics` requires the `admin:metrics` permission — the metrics
+body exposes route names, provider identities and traffic shape. Scrapers
+authenticate with a bearer token like any other client. Restricting it at the
+ingress as well is still correct; this is defence in depth, not a replacement.
 
 ## Endpoints
 
@@ -128,7 +178,20 @@ the user cannot see and cannot revoke.
 |---|---|---|
 | `POST` | `/api/v1/chat` | Non-streaming completion |
 | `POST` | `/api/v1/chat/stream` | SSE streaming completion |
-| `POST` | `/api/v1/chat/:messageId/regenerate` | Regenerate an assistant turn |
+| `POST` | `/api/v1/chat/regenerate` | Regenerate an assistant turn |
+| `POST` | `/api/v1/chat/continue` | Extend a reply that stopped at the output limit |
+| `POST` | `/api/v1/chat/stop` | Stop an in-flight stream |
+
+**Why `stop` needs a stream id rather than a thread id.** The stop request
+arrives on a *different connection* from the stream it cancels, so the abort
+signal cannot be reached through the original request. The stream emits a
+`stream` event carrying its id before any token, and the client sends that back.
+
+**Stop is per-instance.** The registry holding stream-id → `AbortController`
+lives in process memory, so with more than one instance a stop may land where
+the stream is not running. Redis pub/sub keyed by stream id is the fix, and is
+deferred with the rest of the shared-state work
+([ADR-014](15-decisions.md#adr-014--redis-is-required-for-horizontal-scaling)).
 
 Request:
 
@@ -156,6 +219,11 @@ cannot over-declare and needlessly shrink the candidate set.
 Without idempotency they get two identical turns in their conversation and two
 provider calls billed. The key is stored in Redis for 24 h; a repeat returns the
 original result.
+
+**Why continue appends to the existing message.** A continuation is added to
+the assistant turn it extends rather than appended as a second one: two
+consecutive assistant messages are malformed dialogue, and models trained on
+well-formed conversation handle them badly.
 
 **Why regenerate is its own endpoint rather than `POST /chat` with a flag.** It
 has different semantics — it *replaces* an assistant turn rather than appending —

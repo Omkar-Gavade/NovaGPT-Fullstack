@@ -56,7 +56,7 @@ describe("provider lifecycle — discovery through registration", () => {
     const result = await manager.start();
 
     assert.ok(result.registered.includes("mock"));
-    assert.equal(result.failed.length, 0);
+    assert.equal(result.failed.length, 0, "every adapter on disk must load cleanly");
     assert.ok(registry.has("mock"));
     assert.ok(modelRegistry.size >= 2, "the adapter contributed its own models");
     await manager.stop();
@@ -67,10 +67,14 @@ describe("provider lifecycle — discovery through registration", () => {
     const result = await manager.start();
 
     assert.equal(result.registered.length, 0);
-    assert.match(result.skipped[0].reason, /MOCK_PROVIDER_ENABLED/);
+    // Located by id, not by position: the adapters directory holds every real
+    // provider now, and discovery order is filesystem order.
+    const mock = result.skipped.find((entry) => entry.id === "mock");
+    assert.ok(mock, "the mock adapter must appear among the skipped");
+    assert.match(mock.reason, /MOCK_PROVIDER_ENABLED/);
     // Skipped providers stay visible: an absence with a fixable cause must not
     // be silent.
-    assert.equal(registry.snapshot().skipped.length, 1);
+    assert.equal(registry.snapshot().skipped.length, result.skipped.length);
     await manager.stop();
   });
 
@@ -87,7 +91,8 @@ describe("provider lifecycle — discovery through registration", () => {
     const { manager } = build({ policy: { allowlist: ["something-else"] } });
     const result = await manager.start();
     assert.equal(result.registered.length, 0);
-    assert.match(result.skipped[0].reason, /PROVIDERS_ENABLED/);
+    const mock = result.skipped.find((entry) => entry.id === "mock");
+    assert.match(mock.reason, /PROVIDERS_ENABLED/);
     await manager.stop();
   });
 

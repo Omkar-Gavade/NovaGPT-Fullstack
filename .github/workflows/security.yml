@@ -1,0 +1,86 @@
+name: security
+
+# Secret scanning, dependency auditing and static analysis on every change.
+#
+# These run as *gates*, not as advisories. A control that reports and does not
+# fail is a control everyone learns to scroll past
+# (docs/backend/10-security.md#security-in-the-development-lifecycle).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Advisories are published against code that has not changed, so a
+    # commit-triggered scan alone leaves a repository quietly vulnerable.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs history to scan the commits in a pull request, not
+          # only the merged tree — a key committed and then reverted is still a
+          # leaked key.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependencies:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+      # `ci` rather than `install`: it fails when the lockfile and the manifest
+      # disagree, which is the state a dependency-confusion attack produces.
+      - run: npm ci
+      - run: npm audit --audit-level=high
+
+  tests:
+    name: test suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+      - run: npm ci
+      # The authorization sweep lives here (test/e2e/authorization.test.js) and
+      # is the reason this job is in the security workflow rather than only in
+      # the build one.
+      - run: npm test
+
+  codeql:
+    name: static analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3

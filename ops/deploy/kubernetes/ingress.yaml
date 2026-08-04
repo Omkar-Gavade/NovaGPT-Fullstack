@@ -1,0 +1,59 @@
+# Ingress, with the streaming-specific settings.
+#
+# **Every annotation below has produced the same user-visible symptom at least
+# once somewhere: "streaming doesn't work, the whole answer arrives at the
+# end".** They have different causes and the debugging cost is high, which is
+# why they are a checklist rather than prose
+# (docs/backend/13-deployment.md#load-balancer-requirements--the-streaming-specific-ones).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: novagpt-api
+  annotations:
+    # THE one. A buffering proxy holds the entire stream and delivers it at the
+    # end, defeating streaming completely while looking like a slow backend.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    # Compression buffers to fill its window, adding latency to every token.
+    nginx.ingress.kubernetes.io/enable-gzip: "false"
+    # A long generation looks *idle* to a proxy that only watches for request
+    # activity. Below REQUEST_TIMEOUT_MS so the application's own error wins.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Instances are stateless; requiring stickiness would only prevent even
+    # load distribution.
+    nginx.ingress.kubernetes.io/affinity: ""
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # A year, so a downgrade attack has no window.
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.novagpt.example]
+      secretName: novagpt-tls
+  rules:
+    - host: api.novagpt.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: novagpt-api
+                port: { name: http }
+---
+# Metrics are an operator surface: they expose route names, provider identities
+# and traffic shape. The endpoint already requires the `admin:metrics`
+# permission — this is defence in depth, not a replacement for it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: novagpt-metrics
+spec:
+  podSelector:
+    matchLabels: { app: novagpt-api }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { name: monitoring }
+      ports: [{ port: 8080, protocol: TCP }]
