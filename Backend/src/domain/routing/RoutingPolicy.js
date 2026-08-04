@@ -136,6 +136,18 @@ export class RoutingPolicy {
     const model = catalog.find((m) => m.id === preferredModelId);
 
     if (!model) {
+      // **Falls back, and says so.**
+      //
+      // Making an unknown id a hard error was considered and rejected: at
+      // request time "never existed" is indistinguishable from "existed and was
+      // retired from the catalog", and failing the second breaks every
+      // conversation pinned to a model that has since been removed — a worse
+      // outcome than the one it prevents.
+      //
+      // The honesty requirement is met by reporting instead of refusing. The
+      // decision is marked `overridden` and the reason names the unknown id,
+      // both of which reach the client on `message.routing`. A *silent*
+      // substitution would be the unacceptable version; this is not silent.
       return {
         rejection: new RejectionReason({
           modelId: preferredModelId,
