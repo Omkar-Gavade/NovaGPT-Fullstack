@@ -77,6 +77,11 @@ export class Adapter extends BaseProvider {
     this.baseURL = (config.settings?.baseURL ?? API_ROOT).replace(/\/$/, "");
     this.http = config.http ?? new HttpClient({ clock: config.clock });
     this.timeoutMs = config.settings?.timeoutMs ?? 60_000;
+    // Tokens the model may spend reasoning, on top of the caller's output
+    // budget. Zero by default: a caller asking for N tokens of answer should
+    // get N tokens of answer, and a deployment that wants reasoning depth can
+    // raise this knowing it pays for it (GEMINI_THINKING_BUDGET).
+    this.thinkingBudget = Number(config.settings?.thinkingBudget ?? 0);
   }
 
   /**
@@ -103,6 +108,30 @@ export class Adapter extends BaseProvider {
         upstreamStatus: status,
       });
     }
+
+    // **Found by live verification, and it was severe.**
+    //
+    // Gemini rejects an invalid or revoked key with `400 INVALID_ARGUMENT`,
+    // not the `401`/`403` every other provider uses. The shared mapper reads
+    // 400 as `api_error` — the one kind that is deliberately *not* retried and
+    // *not* failed over, because it means "the request itself was malformed and
+    // another provider would reject it identically".
+    //
+    // So a rotated or expired Gemini key produced: no failover, no breaker,
+    // every request failing outright, and the `auth`-keyed "platform key
+    // rejected" alert never firing. The mocked contract suite was green
+    // throughout, because it asserts 401/403 → auth and never sends a 400 that
+    // is really an auth failure.
+    //
+    // Matched on the body rather than the status, since the status is the part
+    // Gemini gets unconventionally wrong.
+    if (/API_KEY_INVALID|API key not valid|PERMISSION_DENIED|API_KEY_SERVICE_BLOCKED/i.test(body ?? "")) {
+      return new ProviderError(`${this.name} rejected the credential`, FailureKind.AUTH, {
+        provider: this.id,
+        upstreamStatus: status,
+      });
+    }
+
     return mapHttpError(status, body, cause, { providerId: this.id, providerName: this.name });
   };
 
@@ -126,12 +155,42 @@ export class Adapter extends BaseProvider {
     };
   }
 
-  generationConfig(options) {
+  /**
+   * **Found by live verification: Gemini 2.5 charges thinking tokens against
+   * `maxOutputTokens`.**
+   *
+   * A request with `maxOutputTokens: 16` came back with
+   * `thoughtsTokenCount: 11`, `candidatesTokenCount: 1`, the text `"NOV"`, and
+   * `finishReason: MAX_TOKENS`. No other provider in the fleet behaves this
+   * way, and the consequences reached well past a short reply:
+   *
+   *   - The context engine reserves `maxTokens` for *output*. A user asking for
+   *     512 tokens could receive a fraction of that, silently truncated.
+   *   - `MAX_TOKENS` normalises to `length`, which is what offers the user a
+   *     "continue" affordance — so a reply cut short by internal reasoning
+   *     looked exactly like one cut short for being long.
+   *
+   * An adapter's job is to make a provider honour the contract the router
+   * assumes, so `maxTokens` is normalised to mean **visible output tokens**:
+   * the thinking allowance is added on top rather than taken out of it, and is
+   * itself bounded. The sum is clamped to the model's real ceiling, since
+   * asking for more than a model accepts is an error rather than a bigger
+   * answer.
+   */
+  generationConfig(options, model = null) {
+    const requested = options.maxTokens ?? 2048;
+    const thinkingBudget = this.thinkingBudget;
+    const ceiling = model?.maxOutputTokens ?? Infinity;
+
     const config = {
       temperature: options.temperature ?? 0.7,
-      maxOutputTokens: options.maxTokens ?? 2048,
+      maxOutputTokens: Math.min(requested + thinkingBudget, ceiling),
       topP: options.topP ?? 0.95,
     };
+
+    // Explicit either way. Omitting it lets the model choose its own budget,
+    // which is what made the output length unpredictable in the first place.
+    config.thinkingConfig = { thinkingBudget };
     if (options.stop?.length) config.stopSequences = options.stop;
     if (options.json || options.jsonSchema) config.responseMimeType = "application/json";
     // Native schema enforcement, which is why these models declare
@@ -152,7 +211,7 @@ export class Adapter extends BaseProvider {
         body: JSON.stringify({
           contents,
           systemInstruction,
-          generationConfig: this.generationConfig(options),
+          generationConfig: this.generationConfig(options, this.modelFor(options.model)),
         }),
       },
       { timeoutMs: this.timeoutMs, signal: options.signal, mapError: this.mapError }
@@ -198,7 +257,7 @@ export class Adapter extends BaseProvider {
         body: JSON.stringify({
           contents,
           systemInstruction,
-          generationConfig: this.generationConfig(options),
+          generationConfig: this.generationConfig(options, this.modelFor(options.model)),
         }),
       },
       { timeoutMs: this.timeoutMs, signal: options.signal, mapError: this.mapError, stream: true }
@@ -338,11 +397,26 @@ const partsToText = (parts) =>
     .map((part) => part?.text ?? "")
     .join("");
 
+/**
+ * Gemini reports thinking tokens **separately** from candidate tokens.
+ *
+ * They are generated, they are billed, and they are not in
+ * `candidatesTokenCount` — so reading that field alone under-reports both
+ * consumption and cost on every thinking model. Found by live verification:
+ * a reply with 1 candidate token had 11 thinking tokens behind it, meaning
+ * spend was being reported at roughly a twelfth of its real value
+ * (docs/backend/11-observability.md#cost-monitoring).
+ */
 function normaliseUsage(metadata) {
   if (!metadata) return null;
+  const candidates = metadata.candidatesTokenCount ?? 0;
+  const thoughts = metadata.thoughtsTokenCount ?? 0;
   return {
     promptTokens: metadata.promptTokenCount ?? null,
-    completionTokens: metadata.candidatesTokenCount ?? null,
+    completionTokens: candidates + thoughts,
+    // Kept separately so the cost dashboard can show what reasoning actually
+    // costs, rather than burying it in the completion total.
+    thinkingTokens: thoughts || undefined,
     totalTokens: metadata.totalTokenCount ?? null,
   };
 }

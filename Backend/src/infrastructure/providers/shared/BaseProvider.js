@@ -68,6 +68,11 @@ export class BaseProvider {
     return new CapabilitySet(union);
   }
 
+  /** The descriptor for a model id, or null. */
+  modelFor(modelId) {
+    return this.models.find((m) => m.id === modelId) ?? null;
+  }
+
   supports(capability) {
     return this.models.some((m) => m.supports(capability));
   }

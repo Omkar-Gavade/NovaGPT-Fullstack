@@ -76,7 +76,7 @@ function sseResponse(chunks) {
   };
 }
 
-function build({ module, fetchImpl }) {
+function build({ module, fetchImpl, settings = {} }) {
   const descriptor = new ProviderDescriptor(module.descriptor);
   return new module.Adapter({
     descriptor,
@@ -84,7 +84,7 @@ function build({ module, fetchImpl }) {
     logger: silentLogger,
     clock: new SystemClock(),
     credential: new Secret("test-key-value", descriptor.envKeys[0]),
-    settings: {},
+    settings,
     http: new HttpClient({ fetch: fetchImpl, clock: new SystemClock() }),
   });
 }
@@ -407,6 +407,123 @@ describe("adapter transport — cancellation and empty responses", () => {
       () => adapter.generate([{ role: "user", content: "x" }], { model: "gemini-2.5-flash" }),
       (error) => {
         assert.equal(error.failureKind, "quota");
+        return true;
+      }
+    );
+  });
+
+  test("gemini maps a rejected key to auth, even though it arrives as a 400", async () => {
+    // **Found by live verification.** Gemini rejects an invalid or revoked key
+    // with `400 INVALID_ARGUMENT`, not the 401/403 every other provider uses,
+    // and the shared mapper reads 400 as `api_error` — the one kind that is
+    // deliberately never retried and never failed over.
+    //
+    // The consequence was severe and silent: a rotated Gemini key meant every
+    // request failed outright with no failover, the breaker never opened, and
+    // the `auth`-keyed "platform key rejected" alert never fired. This suite
+    // was green throughout, because it only ever sent 401/403 as auth failures.
+    //
+    // The body below is the real one, captured from the live API.
+    const adapter = build({
+      module: gemini,
+      fetchImpl: fakeFetch(async () =>
+        textResponse(
+          JSON.stringify({
+            error: {
+              code: 400,
+              message: "API key not valid. Please pass a valid API key.",
+              status: "INVALID_ARGUMENT",
+              details: [{ reason: "API_KEY_INVALID" }],
+            },
+          }),
+          400
+        )
+      ),
+    });
+
+    await assert.rejects(
+      () => adapter.generate([{ role: "user", content: "x" }], { model: "gemini-2.5-flash" }),
+      (error) => {
+        assert.equal(error.failureKind, "auth", "a dead key must open the breaker immediately");
+        return true;
+      }
+    );
+  });
+
+  test("gemini's thinking budget is added to the output cap, not taken from it", async () => {
+    // **Found by live verification.** Gemini 2.5 charges thinking tokens
+    // against `maxOutputTokens`: a request for 16 came back with 11 thinking
+    // tokens, 1 visible token, and finishReason MAX_TOKENS. `maxTokens` is
+    // normalised here to mean *visible* output.
+    let sent = null;
+    const adapter = build({
+      module: gemini,
+      fetchImpl: fakeFetch(async ({ init }) => {
+        sent = JSON.parse(init.body);
+        return textResponse(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }],
+            usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, thoughtsTokenCount: 40, totalTokenCount: 47 },
+          }),
+          200
+        );
+      }),
+      settings: { thinkingBudget: 128 },
+    });
+
+    const result = await adapter.generate([{ role: "user", content: "x" }], {
+      model: "gemini-2.5-flash",
+      maxTokens: 500,
+    });
+
+    assert.equal(sent.generationConfig.maxOutputTokens, 628, "the budget must be added, not shared");
+    assert.equal(sent.generationConfig.thinkingConfig.thinkingBudget, 128);
+
+    // Thinking tokens are generated and billed but reported separately, so
+    // reading `candidatesTokenCount` alone under-reports spend — here by 20x.
+    assert.equal(result.usage.completionTokens, 42);
+    assert.equal(result.usage.thinkingTokens, 40);
+  });
+
+  test("the combined budget never exceeds the model's real ceiling", async () => {
+    // Asking a model for more output than it accepts is an error, not a
+    // longer answer.
+    let sent = null;
+    const adapter = build({
+      module: gemini,
+      fetchImpl: fakeFetch(async ({ init }) => {
+        sent = JSON.parse(init.body);
+        return textResponse(
+          '{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}',
+          200
+        );
+      }),
+      settings: { thinkingBudget: 4096 },
+    });
+
+    await adapter.generate([{ role: "user", content: "x" }], {
+      model: "gemini-2.5-flash",
+      maxTokens: 8000,
+    });
+
+    assert.equal(sent.generationConfig.maxOutputTokens, 8192, "clamped to the declared ceiling");
+  });
+
+  test("a safety block is still api_error, not auth", async () => {
+    // The matcher keys on API-key phrasing rather than on the 400 status, so a
+    // genuinely malformed request must not be misread as a credential problem —
+    // that would open the breaker on a healthy provider.
+    const adapter = build({
+      module: gemini,
+      fetchImpl: fakeFetch(async () =>
+        textResponse('{"error":{"code":400,"message":"Invalid JSON payload"}}', 400)
+      ),
+    });
+
+    await assert.rejects(
+      () => adapter.generate([{ role: "user", content: "x" }], { model: "gemini-2.5-flash" }),
+      (error) => {
+        assert.equal(error.failureKind, "api_error");
         return true;
       }
     );
