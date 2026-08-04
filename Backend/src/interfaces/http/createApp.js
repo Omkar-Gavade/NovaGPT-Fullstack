@@ -12,6 +12,7 @@ import { chatController } from "./controllers/chatController.js";
 import { threadController, shareController } from "./controllers/threadController.js";
 import { catalogController } from "./controllers/catalogController.js";
 import { authController } from "./controllers/authController.js";
+import { userKeyController } from "./controllers/userKeyController.js";
 import { authenticate, requireAuth, requirePermission } from "./middleware/authenticate.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { Permission } from "../../domain/identity/Role.js";
@@ -133,6 +134,11 @@ export function createApp({ config, logger, metrics, clock, tracer, useCases, se
       })
     );
     v1.use(threadController({ threadService: services.threads, config }));
+    // Behind the same gate: a provider key belongs to an account, so there is
+    // no anonymous form of this.
+    if (security.userKeyService) {
+      v1.use(userKeyController({ userKeyService: security.userKeyService, metrics }));
+    }
 
     app.use("/api/v1", v1);
   }

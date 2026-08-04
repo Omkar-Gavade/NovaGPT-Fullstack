@@ -24,6 +24,7 @@ export class ProviderHealthEntry {
    * @param {number|null} raw.latencyMs measured rolling average, null if unproven
    * @param {string} raw.status       projected status for diagnostics
    * @param {number} [raw.priority]   operator bias; higher wins
+   * @param {boolean} [raw.dark]      shipped dark: eligible, but ranked last
    */
   constructor(raw = {}) {
     this.providerId = raw.providerId;
@@ -32,6 +33,10 @@ export class ProviderHealthEntry {
     this.latencyMs = Number.isFinite(raw.latencyMs) ? raw.latencyMs : null;
     this.status = raw.status ?? "unknown";
     this.priority = Number.isFinite(raw.priority) ? raw.priority : 0;
+    // Dark is about *trust*, not health: the provider may be perfectly healthy
+    // and simply has not yet earned user traffic
+    // (docs/backend/03-provider-system.md#provider-onboarding-process).
+    this.dark = raw.dark === true;
     Object.freeze(this);
   }
 }
@@ -75,6 +80,10 @@ export class HealthSnapshot {
 
   priorityOf(providerId) {
     return this.get(providerId).priority;
+  }
+
+  isDark(providerId) {
+    return this.get(providerId).dark;
   }
 
   get availableProviderIds() {

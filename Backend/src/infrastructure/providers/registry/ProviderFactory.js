@@ -128,12 +128,26 @@ export class ProviderFactory {
     }
 
     const credential = this.credentialFor(descriptor);
-    const configured = descriptor.requiresCredentials ? Boolean(credential) : true;
+
+    // A provider is enabled by having its declared variable set. For most that
+    // variable is a credential; for a local runtime like Ollama there is no
+    // credential to have, and the variable is an endpoint — but the rule is the
+    // same, and so is the failure mode it prevents: a provider registered with
+    // nothing behind it fails every request it is routed to
+    // (docs/backend/03-provider-system.md#factory-pattern).
+    //
+    // `requiresCredentials: false` with no declared variables means "always
+    // available", which is what the mock and any future embedded provider need.
+    const declaresVariables = descriptor.envKeys.length > 0;
+    const configured = descriptor.requiresCredentials
+      ? Boolean(credential)
+      : !declaresVariables || Boolean(credential);
 
     if (!configured) {
+      const what = descriptor.requiresCredentials ? "credential" : "endpoint";
       return {
         provider: null,
-        reason: `no credential (set one of: ${descriptor.envKeys.join(", ") || "none declared"})`,
+        reason: `no ${what} (set one of: ${descriptor.envKeys.join(", ") || "none declared"})`,
         configured: false,
       };
     }
@@ -144,8 +158,14 @@ export class ProviderFactory {
         models: this.modelsFor(descriptor),
         logger: this.logger,
         clock: this.clock,
-        credential,
-        settings: config.settings,
+        // A provider needing no credential gets its variable as an **endpoint**,
+        // not wrapped in `Secret`. Wrapping a non-secret would train readers to
+        // reach for `.expose()` without thinking, which is the habit the wrapper
+        // exists to prevent (docs/backend/10-security.md).
+        credential: descriptor.requiresCredentials ? credential : null,
+        settings: descriptor.requiresCredentials
+          ? config.settings
+          : { baseURL: credential?.expose?.(), ...config.settings },
       });
       return { provider, reason: null, configured: true };
     } catch (error) {

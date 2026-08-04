@@ -44,11 +44,22 @@ export class OpenAIDialectProvider extends BaseProvider {
   }
 
   /** Overridden where a provider needs extra headers (e.g. OpenRouter attribution). */
-  get headers() {
+  /**
+   * Takes the request's options so a user-supplied key can replace the
+   * platform one for that request only. A getter reading `this.credential`
+   * could not do that: one adapter instance serves every user.
+   */
+  headersFor(options = {}) {
+    const credential = this.credentialFor(options);
     return {
       "Content-Type": "application/json",
-      ...(this.credential ? { Authorization: `Bearer ${this.credential.expose()}` } : {}),
+      ...(credential ? { Authorization: `Bearer ${credential.expose()}` } : {}),
     };
+  }
+
+  /** The platform-key headers. Kept for probes, which never run on a user key. */
+  get headers() {
+    return this.headersFor({});
   }
 
   /** Overridden where a provider deviates from the shared status mapping. */
@@ -87,10 +98,15 @@ export class OpenAIDialectProvider extends BaseProvider {
     return body;
   }
 
-  async post(path, payload, { stream = false, signal } = {}) {
+  /**
+   * `options` is threaded in rather than read from the instance, so a request
+   * running on a user-supplied key uses that key and no other request can see
+   * it (docs/backend/10-security.md#rules-for-user-supplied-keys).
+   */
+  async post(path, payload, { stream = false, signal, options = {} } = {}) {
     return this.http.request(
       `${this.baseURL}${path}`,
-      { method: "POST", headers: this.headers, body: JSON.stringify(payload) },
+      { method: "POST", headers: this.headersFor(options), body: JSON.stringify(payload) },
       { timeoutMs: this.timeoutMs, signal, mapError: this.mapError, stream }
     );
   }
@@ -100,6 +116,7 @@ export class OpenAIDialectProvider extends BaseProvider {
 
     const data = await this.post("/chat/completions", this.buildBody(messages, options), {
       signal: options.signal,
+      options,
     });
 
     const choice = data.choices?.[0];
@@ -140,7 +157,7 @@ export class OpenAIDialectProvider extends BaseProvider {
         // Without it, cost accounting silently reads zero for every stream.
         stream_options: { include_usage: true },
       }),
-      { stream: true, signal: options.signal }
+      { stream: true, signal: options.signal, options }
     );
 
     yield startEvent(options.model, this.id);
@@ -201,7 +218,7 @@ export class OpenAIDialectProvider extends BaseProvider {
         tools: tools.map((tool) => ({ type: "function", function: tool })),
         tool_choice: options.toolChoice ?? "auto",
       }),
-      { signal: options.signal }
+      { signal: options.signal, options }
     );
     const message = data.choices?.[0]?.message ?? {};
     return {
@@ -225,7 +242,7 @@ export class OpenAIDialectProvider extends BaseProvider {
     const data = await this.post(
       "/embeddings",
       { model, input: inputs },
-      { signal: options.signal }
+      { signal: options.signal, options }
     );
     return (data.data ?? []).map((entry) => entry.embedding);
   }
@@ -243,7 +260,7 @@ export class OpenAIDialectProvider extends BaseProvider {
     try {
       const data = await this.http.request(
         `${this.baseURL}/models`,
-        { headers: this.headers },
+        { headers: this.headersFor(options) },
         { timeoutMs: 8000, mapError: this.mapError }
       );
       const served = new Set((data.data ?? []).map((entry) => entry.id));
@@ -257,13 +274,21 @@ export class OpenAIDialectProvider extends BaseProvider {
   }
 
   /** The cheapest call that proves the endpoint answers. Never a completion. */
-  async health() {
-    if (!this.isConfigured) return { ok: false, latencyMs: null, error: "not configured" };
+  /**
+   * `options` so a candidate BYOK credential can be validated before it is
+   * stored: a key that fails at first use produces a confusing experience the
+   * user attributes to the platform rather than to their key
+   * (docs/backend/10-security.md#rules-for-user-supplied-keys).
+   */
+  async health(options = {}) {
+    if (!this.credentialFor(options)) {
+      return { ok: false, latencyMs: null, error: "not configured" };
+    }
     const started = this.clock?.now?.() ?? Date.now();
     try {
       await this.http.request(
         `${this.baseURL}/models`,
-        { headers: this.headers },
+        { headers: this.headersFor(options) },
         { timeoutMs: 8000, mapError: this.mapError }
       );
       return { ok: true, latencyMs: (this.clock?.now?.() ?? Date.now()) - started };

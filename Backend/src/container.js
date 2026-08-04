@@ -49,6 +49,10 @@ import { LockoutPolicy } from "./domain/identity/LockoutPolicy.js";
 import { MongoUsageRepository } from "./infrastructure/persistence/mongo/MongoUsageRepository.js";
 import { InMemoryUsageRepository } from "./infrastructure/persistence/memory/InMemoryUsageRepository.js";
 import { UsageRecorder } from "./application/usage/UsageRecorder.js";
+import { PromotionService } from "./application/providers/PromotionService.js";
+import { UserKeyService } from "./application/identity/UserKeyService.js";
+import { MongoUserKeyRepository } from "./infrastructure/persistence/mongo/MongoUserKeyRepository.js";
+import { InMemoryUserKeyRepository } from "./infrastructure/persistence/memory/InMemoryUserKeyRepository.js";
 import { Tracer, LogSpanExporter, nullTracer } from "./infrastructure/telemetry/Tracer.js";
 import { SamplingPolicy } from "./domain/observability/SamplingPolicy.js";
 
@@ -163,6 +167,9 @@ export function buildContainer(config) {
     registry: providerRegistry,
     clock,
     priorities: config.routing.priorities,
+    // Ranked last until promoted, so a new provider earns traffic rather than
+    // being handed it (docs/backend/03-provider-system.md#provider-onboarding-process).
+    dark: config.providers.dark,
   });
   const routingService = new RoutingService({
     policy: routingPolicy,
@@ -325,6 +332,45 @@ export function buildContainer(config) {
     ? new EnvelopeCipher({ masterKey: config.auth.encryptionKey.expose() })
     : null;
 
+  const promotionService = new PromotionService({
+    usage: usageRepository,
+    registry: providerRegistry,
+    clock,
+    logger,
+    darkSince: config.providers.darkSince,
+  });
+
+  if (config.providers.dark.length) {
+    logger.info("providers.dark", {
+      providers: config.providers.dark,
+      impact: "ranked last; they receive traffic only as a late failover",
+    });
+  }
+
+  // BYOK. Only usable when a master key is configured — `UserKeyService`
+  // refuses rather than silently falling back, because encrypting user
+  // credentials under a key that dies with the process would be worse than not
+  // offering the feature (docs/backend/10-security.md#envelope-encryption-for-user-keys).
+  const userKeyRepository = config.persistence.inMemory
+    ? new InMemoryUserKeyRepository({ clock })
+    : new MongoUserKeyRepository({ connection: mongo, logger, clock });
+
+  const userKeyService = new UserKeyService({
+    keys: userKeyRepository,
+    cipher: envelopeCipher,
+    registry: providerRegistry,
+    clock,
+    logger,
+    audit: auditLog,
+  });
+
+  if (!envelopeCipher) {
+    logger.info("user_keys.disabled", {
+      reason: "ENCRYPTION_MASTER_KEY is not set",
+      impact: "every request runs on the platform credential",
+    });
+  }
+
   const security = {
     tokenService,
     authService,
@@ -335,6 +381,7 @@ export function buildContainer(config) {
     rules: buildRules(config.rateLimit),
     signer: tokenSigner,
     envelopeCipher,
+    userKeyService,
   };
 
   /* ---- product services ---- */
@@ -352,6 +399,7 @@ export function buildContainer(config) {
       metrics,
       tracer,
       logContent: config.log.content,
+      userKeys: userKeyService,
     }),
     threads: new ThreadService({ threads: threadRepository, clock, logger }),
     catalog: new CatalogService({
@@ -433,12 +481,15 @@ export function buildContainer(config) {
     modelRegistry,
     providerRegistry,
     providerManager,
+    promotionService,
     routingPolicy,
     retryPolicy,
     routingService,
     routingExecutor,
     streamingExecutor,
     threadRepository,
+    userKeyRepository,
+    userKeyService,
     usageRepository,
     usageRecorder,
     userRepository,

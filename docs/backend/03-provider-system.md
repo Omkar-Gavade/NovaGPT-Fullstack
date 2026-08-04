@@ -548,6 +548,33 @@ normal ranking. A provider that fails this gate stays dark or is removed —
 "it mostly works" is not a passing grade for something the router will hand user
 traffic to.
 
+### The dry run, and what it found
+
+The process above was followed twice in Phase 11, deliberately, to find out
+whether "under an hour for an OpenAI-dialect provider" was true or aspirational.
+
+**Adding a model (`qwen-long`): data only, minutes.** Closing the ≥1M context gap
+required a catalog entry and a price-table row. No adapter code changed, because
+Qwen already speaks the dialect. This is the claim the architecture makes about
+models being data, and it held exactly.
+
+**Adding a provider (Ollama): about an hour, and it found three things.**
+
+| Friction | Verdict |
+|---|---|
+| `requiresCredentials: false` registered the provider **unconditionally** — with nothing listening behind it | A real framework defect, fixed in the factory ([ADR-027](15-decisions.md#adr-027--a-provider-is-enabled-by-its-declared-variable-credential-or-not)) |
+| The cost table rejected the new models for having no price | Working as intended — caught by the coverage guard within seconds |
+| Overriding `timeoutMs` with an accessor silently did nothing, because the base class assigns it in its constructor | An adapter-authoring trap. Defaults belong in the `settings` passed to `super()` |
+
+The first is the one worth dwelling on. It only appears for a provider with no
+credential, so seven onboardings could have happened without anyone meeting it —
+which is the argument for doing the dry run against a provider that is
+*different*, rather than the eighth OpenAI-dialect API in a row.
+
+**The estimate holds**, with the caveat that it holds for an adapter that fits
+the existing shape. Ollama did not quite fit, and the hour went into discovering
+where the shape was wrong rather than into writing the adapter.
+
 ### Onboarding checklist
 
 - [ ] Free tier and terms evaluated and recorded

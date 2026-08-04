@@ -35,6 +35,7 @@ export const PRICES = Object.freeze([
   { model: "openai/gpt-oss-120b", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },
 
   // DeepSeek
+  { model: "qwen-long", input: 0.5, output: 2.0, effectiveFrom: "2026-01-01" },
   { model: "deepseek-chat", input: 0.27, output: 1.1, effectiveFrom: "2026-01-01" },
   { model: "deepseek-reasoner", input: 0.55, output: 2.19, effectiveFrom: "2026-01-01" },
 
@@ -53,6 +54,14 @@ export const PRICES = Object.freeze([
   // GLM
   { model: "glm-4-flash", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },
   { model: "glm-4v-flash", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },
+
+  // Ollama — local inference. Zero is a *measured* fact here, not an absence:
+  // the tokens are generated on the operator's own hardware, so there is no
+  // per-token charge to record. Electricity is a real cost and is not a
+  // per-token one, so it does not belong in this table.
+  { model: "llama3.1:8b", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },
+  { model: "qwen2.5-coder:7b", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },
+  { model: "nomic-embed-text", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },
 
   // NVIDIA NIM — free evaluation
   { model: "meta/llama-3.3-70b-instruct", input: 0.0, output: 0.0, effectiveFrom: "2026-01-01" },

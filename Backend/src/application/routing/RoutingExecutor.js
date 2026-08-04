@@ -1,4 +1,5 @@
 import { RetryDecision, SwitchPolicy } from "../../domain/routing/RetryPolicy.js";
+import { FailureKind } from "../../domain/errors/ProviderError.js";
 import { nullTracer } from "../../infrastructure/telemetry/Tracer.js";
 import { AppError, ErrorKind, CancelledError } from "../../domain/errors/index.js";
 
@@ -50,7 +51,15 @@ export class RoutingExecutor {
    * @param {AbortSignal} [input.signal]
    * @returns {Promise<{result, model, provider, attempts, switched, latencyMs}>}
    */
-  async execute({ decision, invoke, options = {}, switchPolicy = SwitchPolicy.AUTO, signal }) {
+  async execute({
+    decision,
+    invoke,
+    options = {},
+    switchPolicy = SwitchPolicy.AUTO,
+    signal,
+    // Providers this request is calling with the *user's* own key.
+    userKeyProviders = new Set(),
+  }) {
     const deadline = this.clock.now() + this.overallTimeoutMs;
     const attempts = [];
     const tried = [];
@@ -167,7 +176,27 @@ export class RoutingExecutor {
         throw outcome.error;
       }
 
-      this.registry.recordFailure(model.provider, outcome.error);
+      // **A user's bad key must never open the shared breaker.**
+      //
+      // Easy to miss and severe when missed: one user pastes an expired key,
+      // the breaker opens on `auth`, and every *other* user loses that provider
+      // — for a credential that was never the platform's
+      // (docs/backend/10-security.md#rules-for-user-supplied-keys).
+      //
+      // Only auth-shaped failures are exempted. A timeout or an outage on a
+      // user's key is still the provider being unwell, and the fleet should
+      // learn from it.
+      const isUserKeyAuthFailure =
+        userKeyProviders.has(model.provider) && outcome.error?.failureKind === FailureKind.AUTH;
+
+      if (isUserKeyAuthFailure) {
+        this.logger?.warn("routing.user_key_rejected", {
+          provider: model.provider,
+          detail: "not counted against the shared breaker",
+        });
+      } else {
+        this.registry.recordFailure(model.provider, outcome.error);
+      }
 
       /* ---------------------------- decide ------------------------------ */
       const hasAlternative = candidateIndex + 1 < decision.chain.length;

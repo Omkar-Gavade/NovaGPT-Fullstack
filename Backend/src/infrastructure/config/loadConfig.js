@@ -107,6 +107,8 @@ export function loadConfig(source = process.env) {
       // disable every provider.
       allowlist: parseList(env.PROVIDERS_ENABLED),
       denylist: parseList(env.PROVIDERS_DISABLED) ?? [],
+      dark: parseList(env.PROVIDERS_DARK) ?? [],
+      darkSince: parseLabels(env.PROVIDERS_DARK_SINCE),
       healthIntervalMs: env.PROVIDER_HEALTH_INTERVAL_MS,
       probeTimeoutMs: env.PROVIDER_PROBE_TIMEOUT_MS,
       failureThreshold: env.PROVIDER_FAILURE_THRESHOLD,

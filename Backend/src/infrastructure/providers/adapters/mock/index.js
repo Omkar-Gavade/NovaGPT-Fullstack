@@ -238,12 +238,19 @@ export class Adapter extends BaseProvider {
     };
   }
 
-  async health() {
+  async health(options = {}) {
     const step = this.plan[this.attempt];
     if (step?.unhealthy) {
       return { ok: false, latencyMs: 0, error: step.message ?? "mock unhealthy" };
     }
-    return super.health();
+    // A scripted `auth` failure means the credential is rejected, and a real
+    // provider's probe endpoint rejects a bad key exactly as its completion
+    // endpoint does. Without this the mock would accept a credential it is
+    // about to refuse — which would make BYOK validation untestable.
+    if (step?.fail === "auth") {
+      return { ok: false, latencyMs: 0, error: "mock auth" };
+    }
+    return super.health(options);
   }
 }
 

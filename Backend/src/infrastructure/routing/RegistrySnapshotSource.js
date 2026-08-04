@@ -19,10 +19,13 @@ export class RegistrySnapshotSource {
    * @param {import("../../domain/ports/ClockPort.js").ClockPort} deps.clock
    * @param {Record<string, number>} [deps.priorities] operator bias per provider
    */
-  constructor({ registry, clock, priorities = {} }) {
+  constructor({ registry, clock, priorities = {}, dark = [] }) {
     this.registry = registry;
     this.clock = clock;
     this.priorities = priorities;
+    // A set rather than an array: this is read once per provider per routing
+    // decision, and routing decisions are on the hot path.
+    this.dark = new Set(dark);
   }
 
   /** @returns {HealthSnapshot} */
@@ -35,6 +38,7 @@ export class RegistrySnapshotSource {
       latencyMs: this.registry.averageLatencyMs(provider.id),
       status: this.registry.statusOf(provider.id),
       priority: this.priorities[provider.id] ?? 0,
+      dark: this.dark.has(provider.id),
     }));
     return new HealthSnapshot(entries, now);
   }

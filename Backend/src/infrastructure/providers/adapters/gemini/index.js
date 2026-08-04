@@ -91,11 +91,17 @@ export class Adapter extends BaseProvider {
    * quote the request line — the exact leak paths the security model is built
    * to close (docs/backend/10-security.md).
    */
-  get headers() {
+  headersFor(options = {}) {
+    const credential = this.credentialFor(options);
     return {
       "Content-Type": "application/json",
-      ...(this.credential ? { "x-goog-api-key": this.credential.expose() } : {}),
+      ...(credential ? { "x-goog-api-key": credential.expose() } : {}),
     };
+  }
+
+  /** The platform-key headers. Kept for probes, which never run on a user key. */
+  get headers() {
+    return this.headersFor({});
   }
 
   mapError = (status, body, cause) => {
@@ -207,7 +213,7 @@ export class Adapter extends BaseProvider {
       `${this.baseURL}/models/${encodeURIComponent(options.model)}:generateContent`,
       {
         method: "POST",
-        headers: this.headers,
+        headers: this.headersFor(options),
         body: JSON.stringify({
           contents,
           systemInstruction,
@@ -253,7 +259,7 @@ export class Adapter extends BaseProvider {
       `${this.baseURL}/models/${encodeURIComponent(options.model)}:streamGenerateContent?alt=sse`,
       {
         method: "POST",
-        headers: this.headers,
+        headers: this.headersFor(options),
         body: JSON.stringify({
           contents,
           systemInstruction,
@@ -316,7 +322,7 @@ export class Adapter extends BaseProvider {
       `${this.baseURL}/models/${encodeURIComponent(model)}:batchEmbedContents`,
       {
         method: "POST",
-        headers: this.headers,
+        headers: this.headersFor(options),
         body: JSON.stringify({
           requests: inputs.map((text) => ({
             model: `models/${model}`,
@@ -335,7 +341,7 @@ export class Adapter extends BaseProvider {
     try {
       const data = await this.http.request(
         `${this.baseURL}/models`,
-        { headers: this.headers },
+        { headers: this.headersFor(options) },
         { timeoutMs: 8000, mapError: this.mapError }
       );
       // Gemini prefixes ids with `models/`.
@@ -347,13 +353,21 @@ export class Adapter extends BaseProvider {
     }
   }
 
-  async health() {
-    if (!this.isConfigured) return { ok: false, latencyMs: null, error: "not configured" };
+  /**
+   * `options` so a candidate BYOK credential can be validated before it is
+   * stored: a key that fails at first use produces a confusing experience the
+   * user attributes to the platform rather than to their key
+   * (docs/backend/10-security.md#rules-for-user-supplied-keys).
+   */
+  async health(options = {}) {
+    if (!this.credentialFor(options)) {
+      return { ok: false, latencyMs: null, error: "not configured" };
+    }
     const started = this.clock?.now?.() ?? Date.now();
     try {
       await this.http.request(
         `${this.baseURL}/models`,
-        { headers: this.headers },
+        { headers: this.headersFor(options) },
         { timeoutMs: 8000, mapError: this.mapError }
       );
       return { ok: true, latencyMs: (this.clock?.now?.() ?? Date.now()) - started };

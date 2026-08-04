@@ -45,6 +45,7 @@ export class ChatOrchestrator {
     metrics,
     tracer = nullTracer,
     logContent = false,
+    userKeys = null,
   }) {
     this.tracer = tracer;
     // Off unless an operator turned it on, and that decision is audited at
@@ -52,6 +53,9 @@ export class ChatOrchestrator {
     // there is exactly one place that decides
     // (docs/backend/11-observability.md#what-is-never-logged).
     this.logContent = logContent === true;
+    // BYOK. Null when the deployment has no encryption key configured, in which
+    // case every request runs on the platform credential.
+    this.userKeys = userKeys;
     this.threads = threads;
     this.routingService = routingService;
     this.routingExecutor = routingExecutor;
@@ -81,7 +85,12 @@ export class ChatOrchestrator {
       switchPolicy: settings.switchPolicy,
       signal: command.signal,
       options: generationOptions(settings),
-      invoke: (provider, model, options) => provider.generate(contextMessages, options),
+      // The credential is resolved *inside* the closure, because which provider
+      // answers is not known until the executor picks one — and it may pick a
+      // different one on the next attempt.
+      invoke: (provider, model, options) =>
+        provider.generate(contextMessages, withCredential(options, prepared.credentials, provider)),
+      userKeyProviders: new Set(prepared.credentials.keys()),
     });
 
     const assistant = this.#assistantMessage({
@@ -143,7 +152,9 @@ export class ChatOrchestrator {
           switchPolicy: settings.switchPolicy,
           signal: controller.signal,
           options: generationOptions(settings),
-          invoke: (provider, model, options) => provider.stream(contextMessages, options),
+          invoke: (provider, model, options) =>
+            provider.stream(contextMessages, withCredential(options, prepared.credentials, provider)),
+          userKeyProviders: new Set(prepared.credentials.keys()),
         });
 
         for await (const event of events) {
@@ -425,6 +436,10 @@ export class ChatOrchestrator {
     if (report.trimmed.length) this.metrics.increment("nova_context_trimmed_total");
     if (report.compressed.length) this.metrics.increment("nova_context_compressions_total");
 
+    // Resolved once per request rather than per attempt: a failover would
+    // otherwise decrypt again, and each decryption is a use of the master key.
+    const credentials = (await this.userKeys?.resolve(command.ownerId)) ?? new Map();
+
     return {
       thread,
       settings,
@@ -433,6 +448,7 @@ export class ChatOrchestrator {
       contextMessages: messages,
       report,
       engine,
+      credentials,
     };
   }
 
@@ -537,6 +553,18 @@ export class ChatOrchestrator {
     // settings change only through the settings endpoint.
     return new Thread({ id: threadId ?? randomUUID(), userId: ownerId ?? null });
   }
+}
+
+/**
+ * Attach the user's own key for this provider, when they have one.
+ *
+ * Per attempt rather than per request, because a failover moves to a different
+ * provider — and the key that belongs to one provider must never travel to
+ * another (docs/backend/10-security.md#rules-for-user-supplied-keys).
+ */
+function withCredential(options, credentials, provider) {
+  const credential = credentials?.get(provider.id);
+  return credential ? { ...options, credential } : options;
 }
 
 /** The closed option set adapters receive. Nothing provider-specific crosses. */

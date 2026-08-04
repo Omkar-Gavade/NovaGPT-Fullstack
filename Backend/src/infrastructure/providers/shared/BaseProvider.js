@@ -68,6 +68,24 @@ export class BaseProvider {
     return new CapabilitySet(union);
   }
 
+  /**
+   * The credential this request should use.
+   *
+   * A user's own key (BYOK) when one was supplied, otherwise the platform key.
+   * Resolved per request rather than per adapter, because a single adapter
+   * instance serves every user — holding a user's key on the instance would
+   * leak it to the next request
+   * (docs/backend/10-security.md#rules-for-user-supplied-keys).
+   */
+  credentialFor(options = {}) {
+    return options.credential ?? this.credential;
+  }
+
+  /** True when this request is running on a user-supplied key. */
+  static usesUserKey(options = {}) {
+    return Boolean(options.credential);
+  }
+
   /** The descriptor for a model id, or null. */
   modelFor(modelId) {
     return this.models.find((m) => m.id === modelId) ?? null;

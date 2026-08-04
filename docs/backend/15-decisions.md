@@ -1329,3 +1329,96 @@ metric is not incremented (so spend is not understated as zero), and
   would let a cost test pass and be wrong in production.
 - A dashboard summing raw cost slightly understates a fleet with unpriced
   models. That is the honest direction to be wrong in, and the audit closes it.
+
+---
+
+## ADR-026 — Ollama joins the fleet
+
+**Status:** Accepted · *Required by step 2 of the onboarding process*
+
+### Problem
+
+Every provider needs a recorded justification for existing, and the bar is
+explicit: *a provider that adds only redundancy we already have is not worth the
+maintenance surface* ([03](03-provider-system.md#provider-onboarding-process)).
+Ollama adds no capability the fleet lacks — its models are weaker than every
+hosted one on the list.
+
+### Decision
+
+Add it anyway, and ship it dark.
+
+### Reasoning
+
+It adds an axis nothing else in the fleet has: **failure independence from the
+network itself.** Every other provider shares one dependency — the host's
+internet connection — so a fleet of eight is still a fleet of one against that
+failure. Ollama is the only candidate that can answer during a total upstream
+outage, which is precisely the scenario the multi-provider design exists for and
+the one it could not previously survive.
+
+Two further properties, either of which would be marginal alone:
+
+- **Prompts never leave the host.** For a deployment that cannot send
+  conversation content to a third party, this is the difference between using
+  the product and not using it.
+- **Zero marginal quota.** It cannot exhaust a free tier, which makes it the
+  natural last resort once every hosted provider has.
+
+### Trade-offs
+
+- **Quality and speed vary by two orders of magnitude with the host's
+  hardware**, so the declared scores are deliberately pessimistic and the
+  provider ships dark. Ranking should learn what a given deployment's Ollama is
+  actually worth from telemetry, not from a number guessed here.
+- The declared models are a *floor, not a promise*: which models an Ollama has
+  pulled is a property of that machine. A deployment running something else
+  should override the catalog entries rather than let the router assume a model
+  that is not installed.
+- It is the first provider enabled by an **endpoint** rather than a credential,
+  which required a change to the factory (below).
+
+---
+
+## ADR-027 — A provider is enabled by its declared variable, credential or not
+
+**Status:** Accepted · *Amends the Phase 2 factory rule*
+
+### Problem
+
+The rule was "a provider is enabled by having a credential", implemented as
+`configured = requiresCredentials ? Boolean(credential) : true`. Ollama has no
+credential to have, so `requiresCredentials: false` made it **unconditionally
+configured** — registered on every deployment, whether or not an Ollama existed.
+
+The failure mode is quiet and bad: a provider in the catalog with nothing
+listening behind it. Routing considers it, sends it a request, and the request
+fails. It is a fleet member that exists only to consume an attempt.
+
+### Decision
+
+A provider is configured when **one of its declared variables is set**,
+regardless of whether that variable is a credential. `requiresCredentials: false`
+with no declared variables still means "always available", which is what the
+mock adapter needs.
+
+A provider needing no credential receives its variable as `settings.baseURL`
+rather than as a `Secret`.
+
+### Reasoning
+
+The original rule was right about the *principle* — enablement is a deliberate
+operator act, not a default — and wrong about the *mechanism*, which assumed
+that act was always "supply a key". Setting `OLLAMA_BASE_URL` is the same
+deliberate act; the value simply is not secret.
+
+Not wrapping it matters more than it looks. Wrapping a non-secret in `Secret`
+would mean `.expose()` calls that are not exposing anything, and the value of
+that wrapper is entirely in what a reader infers when they see it. Diluting it
+with non-secrets is how it stops being a signal.
+
+### Trade-offs
+
+An adapter whose endpoint is genuinely optional now needs a default in the
+adapter rather than relying on the factory. That is one line, and it puts the
+default next to the code that knows what a sensible one is.

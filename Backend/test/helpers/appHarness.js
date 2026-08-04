@@ -35,6 +35,9 @@ import { AuthService } from "../../src/application/identity/AuthService.js";
 import { RateLimiter, buildRules } from "../../src/application/security/RateLimiter.js";
 import { LockoutPolicy } from "../../src/domain/identity/LockoutPolicy.js";
 import { FastHasher } from "./fastHasher.js";
+import { InMemoryUserKeyRepository } from "../../src/infrastructure/persistence/memory/InMemoryUserKeyRepository.js";
+import { UserKeyService } from "../../src/application/identity/UserKeyService.js";
+import { EnvelopeCipher } from "../../src/infrastructure/security/EnvelopeCipher.js";
 import { InMemoryUsageRepository } from "../../src/infrastructure/persistence/memory/InMemoryUsageRepository.js";
 import { UsageRecorder } from "../../src/application/usage/UsageRecorder.js";
 import { Tracer, LogSpanExporter } from "../../src/infrastructure/telemetry/Tracer.js";
@@ -175,6 +178,20 @@ export async function startApp({
     allowRegistration: config.auth.allowRegistration,
   });
 
+  // BYOK is on in the harness unless a test turns it off, so the ordinary
+  // suites exercise the credential-resolution path that production runs.
+  const userKeys = new InMemoryUserKeyRepository({ clock });
+  const userKeyService = new UserKeyService({
+    keys: userKeys,
+    cipher: config.auth.encryptionKey
+      ? new EnvelopeCipher({ masterKey: config.auth.encryptionKey })
+      : new EnvelopeCipher({ masterKey: EnvelopeCipher.generateMasterKey() }),
+    registry: providerRegistry,
+    clock,
+    logger,
+    audit,
+  });
+
   const security = {
     tokenService,
     authService,
@@ -184,6 +201,7 @@ export async function startApp({
     limiter: new RateLimiter({ cache, clock, metrics, logger }),
     rules: buildRules(config.rateLimit),
     signer,
+    userKeyService,
   };
 
   const services = {
@@ -217,6 +235,7 @@ export async function startApp({
       metrics,
       tracer,
       logContent: config.log.content === true,
+      userKeys: userKeyService,
     }),
     threads: new ThreadService({ threads, clock, logger }),
     catalog: new CatalogService({ modelRegistry, providerRegistry, costTable }),
@@ -292,6 +311,8 @@ export async function startApp({
     sessions,
     audit,
     usage: usageRepository,
+    userKeys,
+    userKeyService,
     tracer,
     traces,
     authService,

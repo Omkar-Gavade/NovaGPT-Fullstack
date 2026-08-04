@@ -429,6 +429,40 @@ staging, where the failures are real processes.
 
 ---
 
+## Phase 11 — Provider expansion ✅ *delivered*
+
+*Planned as "Phase 5 — Provider expansion" below; delivered eleventh.*
+
+Live verification against real provider APIs, dark launch with a promotion gate,
+BYOK end to end, Ollama, and the second provider above 1M context.
+
+**The headline: `test/live/` exists, and its first two runs found two real
+defects in the one provider that could be verified.** The mocked contract suite
+was green throughout, which is exactly the point — a mock encodes what we
+already believe.
+
+| Found | Consequence |
+|---|---|
+| Gemini rejects a dead key with `400 INVALID_ARGUMENT`, not 401/403 | It mapped to `api_error`: never retried, never failed over, breaker never opened, and the `auth`-keyed "platform key rejected" alert never fired. A rotated key would have failed every request silently |
+| Gemini 2.5 charges **thinking tokens** against `maxOutputTokens` | A request for 16 returned 11 thinking tokens and 1 visible one. Users' output budgets were being spent on reasoning, and the truncated reply was indistinguishable from one cut short for length. The same quirk under-reported spend twelvefold, since thinking tokens are billed but reported outside `candidatesTokenCount` |
+
+**Found by the onboarding dry run.** `requiresCredentials: false` registered a
+provider *unconditionally* — Ollama would have been in the catalog on every
+deployment with nothing listening behind it, consuming an attempt per request.
+Only reachable for a provider with no credential, which is the argument for
+doing the dry run against something that does not fit the existing shape
+([ADR-027](15-decisions.md#adr-027--a-provider-is-enabled-by-its-declared-variable-credential-or-not)).
+
+**Verification status — the number that matters.** 1 of 8 providers verified.
+Gemini passes 9 live checks; the other seven have no credential in this
+environment and are reported `SKIPPED`, never as passing. `qwen-long` and Ollama
+have never been called at all and ship **dark**.
+
+**Deferred:** live verification of the remaining seven providers, which needs
+free-tier keys and is the last gate before any of them is production-supported.
+
+---
+
 ## Phase 3b — Chat and streaming
 
 **Effort: 3 weeks** · **Depends on: Phase 2**

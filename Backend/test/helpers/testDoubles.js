@@ -82,6 +82,8 @@ export function testConfig(overrides = {}) {
     mongo: { serverSelectionTimeoutMs: 100, maxPoolSize: 1 },
     redis: { enabled: false, url: null, connectTimeoutMs: 100, keyPrefix: "test:" },
     persistence: { inMemory: true },
+    providers: { allowlist: null, denylist: [], dark: [], darkSince: {},
+                 healthIntervalMs: 60_000, probeTimeoutMs: 8000, failureThreshold: 3 },
     routing: {
       maxCandidates: 3,
       maxAttempts: 3,

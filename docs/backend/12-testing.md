@@ -368,6 +368,35 @@ green, and catches nothing.
 The general lesson is the one worth keeping: **a noisy metric forces a threshold
 loose enough to be useless.** Fixing the measurement is what buys a tight bound.
 
+## Live verification versus mocked contract
+
+The distinction the two directories exist to draw, and it is the most important
+one in this document:
+
+| | `test/contract/` | `test/live/` |
+|---|---|---|
+| Talks to | A mocked HTTP layer | The real provider API |
+| Proves | The adapter behaves as we **believe** the provider does | What the provider **actually** does |
+| Costs | Nothing | Real quota, on every run |
+| Runs on | Every commit | `npm run test:live`, with whatever keys you hold |
+
+A mocked suite cannot tell you that a provider returns `400` for a bad key, or
+that its output cap includes tokens the user never sees. Both were true of
+Gemini, both were found on the first live runs, and the mocked suite was green
+for each of them — because a mock can only encode a belief that was already
+held.
+
+**A provider with no credential is skipped and reported as unverified, never
+passed.** Most contributors hold keys for one or two providers, and a suite that
+goes red for the six they did not sign up for is a suite they stop running. What
+must never happen is a skip that reads as a pass, so every run ends with a table
+naming the state of all eight and writes `live-report.json` for the pipeline to
+gate on.
+
+Every live finding gets a **mocked regression test** using the real captured
+response body, so the fix is protected on every commit rather than only when
+someone next runs the live suite with a key.
+
 ## Security testing
 
 Authorization defects are **omissions**, which makes them different from every

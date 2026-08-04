@@ -330,6 +330,11 @@ class RankingContext {
     return this.snapshot.priorityOf(model.provider);
   }
 
+  /** Takes a provider id, since `byDarkness` compares by provider not model. */
+  isDark(providerId) {
+    return this.snapshot.isDark(providerId);
+  }
+
   measuredLatencyFor(model) {
     return this.snapshot.latencyOf(model.provider);
   }

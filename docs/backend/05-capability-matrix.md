@@ -246,10 +246,23 @@ least two providers**, so failover never has to drop a required capability.
 | JSON mode | All except GLM-4V and deepseek-reasoner | ✅ |
 | Schema-enforced output | Gemini, DeepSeek, Mistral | ✅ 3 |
 | Context ≥ 128K | Every provider except GLM-4V | ✅ |
-| Context ≥ 1M | Gemini only | ⚠️ **single point of failure** |
+| Context ≥ 1M | Gemini, Qwen (`qwen-long`, 10M) | ✅ 2 — **closed in Phase 11** |
 | Strong reasoning (≥90) | Gemini Pro, DeepSeek | ✅ 2 |
 | Strong multilingual (≥90) | Qwen, Zhipu | ✅ 2 |
 | Very high speed (≥94) | Groq ×2, Gemini Flash | ✅ 3 |
+
+> **Closed.** `qwen-long` (Alibaba, 10M context) was added in Phase 11, as a
+> catalog entry with no adapter code. Alibaba rather than another Google surface
+> because failure independence is the whole point — a second route to the same
+> vendor closes the gap on paper and not in an outage. The rule is now enforced
+> by [`test/contract/capabilityCoverage.test.js`](../../Backend/test/contract/capabilityCoverage.test.js),
+> which also asserts the two providers are different vendors, so it cannot
+> silently reopen.
+>
+> `qwen-long` has **not** been verified against the live API and ships dark.
+>
+> The original analysis is kept below, because the reasoning is what makes the
+> fix legible.
 
 **The one identified gap: context above 256K is Gemini-only.** A conversation
 needing more than 256K tokens has no failover destination — if Gemini is down,

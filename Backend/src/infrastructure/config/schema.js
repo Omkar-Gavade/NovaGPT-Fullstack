@@ -99,6 +99,16 @@ export const envSchema = z.object({
   // operator can take a provider out of rotation with an env change and a
   // restart, without editing an allowlist that then has to be maintained.
   PROVIDERS_DISABLED: z.string().optional(),
+  // Comma-separated. A dark provider is configured and reachable but ranked
+  // **last**, so it receives traffic only as a late failover while it
+  // accumulates real telemetry with a bounded blast radius. This is step 9 of
+  // onboarding; step 10 removes it from this list
+  // (docs/backend/03-provider-system.md#provider-onboarding-process).
+  PROVIDERS_DARK: z.string().optional(),
+  // `provider=2026-08-01T00:00:00Z` pairs — when each entered observation.
+  // Configured rather than inferred, because inferring it from the first usage
+  // record restarts the clock whenever a provider goes a window without traffic.
+  PROVIDERS_DARK_SINCE: z.string().optional(),
   // Recovery polling. Only ever probes providers that are *not* healthy, so
   // this is not a per-provider request rate
   // (docs/backend/03-provider-system.md#health-system).

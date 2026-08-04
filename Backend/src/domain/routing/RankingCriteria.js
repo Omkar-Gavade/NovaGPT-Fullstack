@@ -33,6 +33,31 @@ const COST_RANK = Object.fromEntries(CostBand.map((band, index) => [band, index]
 const HEALTH_BUCKET = 0.1;
 const bucketHealth = (health) => Math.round(health / HEALTH_BUCKET);
 
+/**
+ * 0 — Dark providers rank below every promoted one.
+ *
+ * A provider ships **dark** after its adapter passes the contract suite but
+ * before it has earned user traffic: configured, reachable, and ranked last, so
+ * it receives requests only as a late failover
+ * (docs/backend/03-provider-system.md#provider-onboarding-process). It
+ * accumulates real telemetry against real traffic with a bounded blast radius.
+ *
+ * **Above health, and that ordering is the point.** A dark provider in perfect
+ * health must still rank below a promoted one that is struggling, because the
+ * question dark answers is not "does this work?" but "have we watched it work
+ * long enough to hand it a user's request?". Placing this below health would
+ * let a brand-new provider outrank the fleet the moment anything else dipped —
+ * which is precisely the blast radius shipping dark exists to bound.
+ *
+ * It is a *ranking* criterion rather than a filter, so a dark provider is still
+ * reachable when everything promoted has failed. Being last is not being
+ * excluded, and a fleet that would otherwise have no candidate left should use
+ * what it has.
+ */
+export function byDarkness(a, b, context) {
+  return (context.isDark(a.provider) ? 1 : 0) - (context.isDark(b.provider) ? 1 : 0);
+}
+
 /** 1 — Health, descending. A likely failure costs an attempt *plus* a failover. */
 export function byHealth(a, b, context) {
   return bucketHealth(context.healthOf(b)) - bucketHealth(context.healthOf(a));
@@ -97,6 +122,7 @@ export function byCatalogOrder(a, b, context) {
 
 /** The chain, in the order the documentation defines. */
 export const RANKING_CHAIN = Object.freeze([
+  { name: "darkness", compare: byDarkness },
   { name: "health", compare: byHealth },
   { name: "priority", compare: byPriority },
   { name: "tier", compare: byTier },

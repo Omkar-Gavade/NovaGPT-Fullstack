@@ -275,19 +275,29 @@ That last rule is easy to miss and produces a severe, hard-to-diagnose bug: one
 user pastes an expired key, the breaker opens on `auth`, and every user loses
 that provider.
 
-**Status.** The encryption half is built and tested
-([`EnvelopeCipher`](../../Backend/src/infrastructure/security/EnvelopeCipher.js)):
-per-record data keys, AES-256-GCM, master-key rotation that re-wraps keys without
-touching a payload, and a `mask()` that is the only thing ever returned about a
-stored key. It is wired into the composition root and constructed **only** when
-`ENCRYPTION_MASTER_KEY` is set — generating one would encrypt user secrets under
-a key that dies with the process, which is worse than refusing the feature.
+**Status: complete as of Phase 11.** All five rules are implemented and each has
+a test that fails without it
+([`test/e2e/userKeys.test.js`](../../Backend/test/e2e/userKeys.test.js)).
 
-The *consumption* half — a per-request credential threaded through the router
-into an adapter's headers — is not built, and no BYOK endpoints are exposed. It
-changes `ProviderPort`, which the shared contract suite pins across nine
-adapters, so it belongs with provider expansion rather than here. Shipping a
-"save your key" endpoint whose keys nothing uses would be a fake feature.
+| Rule | Where it lives |
+|---|---|
+| Validated with a cheap probe on submission | `UserKeyService.store()` calls the provider's health probe with the candidate credential **before** writing |
+| Write-only through the API | No route returns the envelope, and `toPublicJSON()` has no field for one |
+| Deletable, immediately and completely | `remove()` deletes the row. A soft delete would leave ciphertext in every backup taken afterwards |
+| Never used for another user's request | `resolve()` is scoped by owner and returns a `Map` built per request |
+| **A user's failure never opens the shared breaker** | `RoutingExecutor` exempts `auth` failures on a user key — and only `auth`, since a timeout is the provider being unwell whoever's key was used |
+
+Two implementation notes worth recording:
+
+**The credential is attached per *attempt*, not per request.** A failover moves
+to a different provider, and the key that belongs to one provider must never
+travel to another. The resolution happens inside the `invoke` closure, which is
+the only place that knows which provider is about to be called.
+
+**Resolved keys are wrapped in `Secret` the moment they leave storage**, so the
+naive `log.info({ credential })` produces `[REDACTED:BYOK]`. Decryption happens
+once per request rather than once per attempt, because each decryption is a use
+of the master key.
 
 ## Rate limiting
 
