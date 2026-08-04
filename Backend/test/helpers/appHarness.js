@@ -19,6 +19,7 @@ import { ChatOrchestrator } from "../../src/application/chat/ChatOrchestrator.js
 import { StreamRegistry } from "../../src/application/chat/StreamRegistry.js";
 import { ThreadService } from "../../src/application/threads/ThreadService.js";
 import { CatalogService } from "../../src/application/catalog/CatalogService.js";
+import { CapabilityService } from "../../src/application/capability/CapabilityService.js";
 import { costTable } from "../../src/infrastructure/providers/catalog/CostTable.js";
 import { testConfig, recordingLogger, fakeProbe } from "./testDoubles.js";
 import { buildMockProvider } from "./mockProvider.js";
@@ -245,6 +246,21 @@ export async function startApp({
       }),
     }),
     threads: new ThreadService({ threads, clock, logger }),
+    capability: new CapabilityService({
+      routingService,
+      routingExecutor: new RoutingExecutor({
+        retryPolicy,
+        invoker: new ProviderInvoker({ clock, logger, attemptTimeoutMs: 5000 }),
+        registry: providerRegistry,
+        clock,
+        logger,
+        metrics,
+        usageRecorder,
+        tracer,
+      }),
+      logger,
+      metrics,
+    }),
     catalog: new CatalogService({ modelRegistry, providerRegistry, costTable }),
   };
 

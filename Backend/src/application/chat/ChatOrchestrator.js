@@ -7,6 +7,11 @@ import {
   requirementsOfContent,
   withoutPayloads,
 } from "../../domain/conversation/MessageContent.js";
+import {
+  parseModelJson,
+  validateAgainstSchema,
+  unsupportedKeywords,
+} from "../../domain/capability/SchemaValidator.js";
 import { ContextEngine } from "../../domain/context/ContextEngine.js";
 import { CalibratedTokenEstimator } from "../../domain/context/TokenEstimator.js";
 import { StreamEventType } from "../../domain/streaming/StreamEvent.js";
@@ -102,6 +107,11 @@ export class ChatOrchestrator {
       userKeyProviders: new Set(prepared.credentials.keys()),
     });
 
+    // **Checked before the client sees it.** A provider that advertises schema
+    // enforcement does not always deliver it, and a caller who asked for
+    // `json_schema` cannot tell a provider's lapse from a bug of their own.
+    const structured = this.#validateStructured(command.responseFormat, outcome.result.text);
+
     const assistant = this.#assistantMessage({
       content: outcome.result.text,
       model: outcome.model,
@@ -109,6 +119,7 @@ export class ChatOrchestrator {
       finishReason: outcome.result.finishReason ?? FinishReason.STOP,
       report,
       decision,
+      structured,
     });
 
     const saved = await this.#persist(prepared, assistant, outcome.result.usage, report);
@@ -520,7 +531,49 @@ export class ChatOrchestrator {
     });
   }
 
-  #assistantMessage({ content, model, usage, finishReason, report, decision }) {
+  /**
+   * Validate structured output, or explain why it cannot be trusted.
+   *
+   * Returns the parsed value on success so the client is handed data rather
+   * than a string it has to parse again — and throws on a mismatch, because
+   * returning malformed output *labelled* as schema-conforming is worse than
+   * an error: the client has no reason to check.
+   */
+  #validateStructured(responseFormat, text) {
+    if (responseFormat?.type !== "json_schema") return null;
+
+    const unsupported = unsupportedKeywords(responseFormat.schema);
+    if (unsupported.length) {
+      // Not fatal. The request works; the guarantee is simply weaker than the
+      // schema implies, and the caller should know which part is unchecked.
+      this.logger?.warn("chat.schema_partially_enforced", { keywords: unsupported });
+    }
+
+    const parsed = parseModelJson(text);
+    if (!parsed.ok) {
+      throw new AppError(`Structured output failed: ${parsed.error}.`, ErrorKind.PROVIDER_ERROR, {
+        expected: true,
+        details: { reason: parsed.error },
+      });
+    }
+
+    const { valid, errors } = validateAgainstSchema(parsed.value, responseFormat.schema);
+    if (!valid && responseFormat.strict !== false) {
+      this.metrics?.increment("nova_structured_output_total", { outcome: "invalid" });
+      throw new AppError(
+        "The model's output did not match the requested schema.",
+        ErrorKind.PROVIDER_ERROR,
+        { expected: true, details: { errors: errors.slice(0, 10), unsupported } }
+      );
+    }
+
+    this.metrics?.increment("nova_structured_output_total", {
+      outcome: valid ? "valid" : "invalid_allowed",
+    });
+    return { value: parsed.value, valid, errors, unsupported };
+  }
+
+  #assistantMessage({ content, model, usage, finishReason, report, decision, structured = null }) {
     return new Message({
       id: randomUUID(),
       role: Role.ASSISTANT,
@@ -529,6 +582,9 @@ export class ChatOrchestrator {
       provider: model?.provider ?? null,
       usage,
       finishReason,
+      // The parsed value, so a client is handed data rather than a string it
+      // must parse a second time.
+      structured: structured?.value ?? undefined,
       // Summaries only — the full objects are in the logs, keyed by trace id.
       contextReport: {
         estimatedTokens: report.estimatedTokens,

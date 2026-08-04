@@ -124,6 +124,8 @@ export function testConfig(overrides = {}) {
       authPerMinute: 100_000,
       chatPerMinute: 100_000,
       chatPerHour: 100_000,
+      capabilityPerMinute: 100_000,
+      visionPerMinute: 100_000,
     },
     shutdown: { graceMs: 1000, drainDelayMs: 0 },
     ...overrides,

@@ -65,6 +65,8 @@ export function chatController({ orchestrator, logger, limit = [] }) {
       message: req.body.message,
       attachments: req.body.attachments,
       settings: req.body.settings,
+      tools: req.body.tools,
+      responseFormat: req.body.responseFormat,
       signal: controller.signal,
     });
 

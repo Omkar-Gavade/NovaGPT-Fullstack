@@ -1,4 +1,5 @@
 import { BaseProvider } from "./BaseProvider.js";
+import { ToolCall } from "../../../domain/capability/ToolCall.js";
 import { HttpClient, mapHttpError } from "./HttpClient.js";
 import { parseSseStream, parseJsonPayload } from "./SseParser.js";
 import { ProviderError, FailureKind, UnsupportedCapabilityError } from "../../../domain/errors/index.js";
@@ -223,11 +224,9 @@ export class OpenAIDialectProvider extends BaseProvider {
     const message = data.choices?.[0]?.message ?? {};
     return {
       text: message.content ?? "",
-      toolCalls: (message.tool_calls ?? []).map((call) => ({
-        id: call.id,
-        name: call.function?.name,
-        arguments: call.function?.arguments,
-      })),
+      // Normalised, so a failover between dialects is invisible to the client
+      // (docs/backend/05-capability-matrix.md).
+      toolCalls: (message.tool_calls ?? []).map((call) => ToolCall.fromOpenAI(call).toJSON()),
       model: data.model ?? options.model,
       usage: normaliseUsage(data.usage),
     };

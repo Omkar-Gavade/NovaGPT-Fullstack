@@ -31,6 +31,39 @@ const attachment = z
   })
   .strict();
 
+/**
+ * A tool the model may call. **Declaration only — never execution.**
+ *
+ * The boundary is deliberate and stated: this platform returns the model's
+ * intent to call a tool, and the client decides whether to act on it. Executing
+ * a tool server-side is a trust and sandboxing problem of a different kind, and
+ * it is explicitly out of scope
+ * (docs/backend/14-roadmap.md, "what is deliberately not on this roadmap").
+ */
+const tool = z
+  .object({
+    name: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/),
+    description: z.string().max(1024).optional(),
+    // The schema shape is provider-defined; validating its internals here would
+    // reject schemas a provider accepts.
+    parameters: z.record(z.string(), z.any()).optional(),
+  })
+  .strict();
+
+const responseFormat = z
+  .object({
+    type: z.enum(["text", "json", "json_schema"]),
+    schema: z.record(z.string(), z.any()).optional(),
+    // Reject output that does not match, rather than returning it with a
+    // warning. Default true: a caller who asked for a schema wants the schema.
+    strict: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => v.type !== "json_schema" || v.schema, {
+    message: "json_schema requires a schema",
+    path: ["schema"],
+  });
+
 export const sendMessageSchema = z
   .object({
     threadId: z.string().min(1).optional(),
@@ -39,7 +72,18 @@ export const sendMessageSchema = z
     message: z.string().min(1).max(100_000),
     attachments: z.array(attachment).max(10).optional(),
     settings: settings.optional(),
+    tools: z.array(tool).max(64).optional(),
+    responseFormat: responseFormat.optional(),
     idempotencyKey: z.string().min(8).max(128).optional(),
+  })
+  .strict();
+
+export const embeddingsSchema = z
+  .object({
+    // An array, always — batching is the difference between one round trip and
+    // a hundred, and a string-or-array union makes every caller handle both.
+    input: z.array(z.string().min(1).max(8_000)).min(1).max(100),
+    model: z.string().min(1).optional(),
   })
   .strict();
 

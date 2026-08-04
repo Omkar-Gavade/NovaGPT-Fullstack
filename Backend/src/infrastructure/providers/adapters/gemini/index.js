@@ -1,4 +1,5 @@
 import { BaseProvider } from "../../shared/BaseProvider.js";
+import { ToolCall } from "../../../../domain/capability/ToolCall.js";
 import { HttpClient, mapHttpError } from "../../shared/HttpClient.js";
 import { parseSseStream, parseJsonPayload } from "../../shared/SseParser.js";
 import { ProviderError, FailureKind, UnsupportedCapabilityError } from "../../../../domain/errors/index.js";
@@ -140,6 +141,54 @@ export class Adapter extends BaseProvider {
 
     return mapHttpError(status, body, cause, { providerId: this.id, providerName: this.name });
   };
+
+  /**
+   * Tool calling.
+   *
+   * **This adapter declared `toolCalling: true` on both chat models and never
+   * implemented the method.** `BaseProvider.toolCalling` throws
+   * `unsupported`, so routing would happily select Gemini for a tool request —
+   * capability matching passes, the catalog says yes — and the call would fail
+   * at dispatch with an error the router does not fail over on, because an
+   * unsupported capability is treated as a *data* bug rather than a provider
+   * one (deliberately: masking it would hide a matrix that keeps misrouting).
+   *
+   * Which is exactly right, and exactly what happened: the matrix was wrong.
+   */
+  async toolCalling(messages, tools, options = {}) {
+    this.assertSupported("toolCalling", options.model);
+    const { contents, systemInstruction } = this.toGemini(messages);
+
+    const data = await this.http.request(
+      `${this.baseURL}/models/${encodeURIComponent(options.model)}:generateContent`,
+      {
+        method: "POST",
+        headers: this.headersFor(options),
+        body: JSON.stringify({
+          contents,
+          systemInstruction,
+          // Gemini nests declarations one level deeper than the dialect does,
+          // and names the field `parameters` identically — so the only
+          // difference is the wrapper.
+          tools: [{ functionDeclarations: tools }],
+          generationConfig: this.generationConfig(options, this.modelFor(options.model)),
+        }),
+      },
+      { timeoutMs: this.timeoutMs, signal: options.signal, mapError: this.mapError }
+    );
+
+    const parts = data.candidates?.[0]?.content?.parts ?? [];
+    const calls = parts.filter((part) => part.functionCall).map((part) => part.functionCall);
+
+    return {
+      text: parts.filter((p) => p.text).map((p) => p.text).join(""),
+      // Normalised to the same shape the dialect adapters produce: arguments as
+      // a parsed object, with an id synthesised because Gemini issues none.
+      toolCalls: calls.map((call, i) => ToolCall.fromGemini(call, i).toJSON()),
+      model: options.model,
+      usage: normaliseUsage(data.usageMetadata),
+    };
+  }
 
   /**
    * Domain messages → Gemini `contents`.

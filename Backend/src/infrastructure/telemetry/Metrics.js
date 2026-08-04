@@ -224,6 +224,16 @@ const DEFINITIONS = [
     labels: ["reason"],
   },
 
+  {
+    name: "nova_structured_output_total",
+    type: "counter",
+    help: "Structured-output responses, by whether they matched the schema.",
+    // An `invalid` rate above noise means a provider is advertising schema
+    // enforcement it does not deliver — which is a routing input, not a bug
+    // report for the client.
+    labels: ["outcome"],
+  },
+
   /* ---- security (docs/backend/10-security.md) ---- */
   {
     name: "nova_auth_events_total",

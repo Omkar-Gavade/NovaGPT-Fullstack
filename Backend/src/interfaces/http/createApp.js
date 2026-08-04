@@ -13,6 +13,7 @@ import { threadController, shareController } from "./controllers/threadControlle
 import { catalogController } from "./controllers/catalogController.js";
 import { authController } from "./controllers/authController.js";
 import { userKeyController } from "./controllers/userKeyController.js";
+import { capabilityController } from "./controllers/capabilityController.js";
 import { authenticate, requireAuth, requirePermission } from "./middleware/authenticate.js";
 import { rateLimit } from "./middleware/rateLimit.js";
 import { Permission } from "../../domain/identity/Role.js";
@@ -134,6 +135,17 @@ export function createApp({ config, logger, metrics, clock, tracer, useCases, se
       })
     );
     v1.use(threadController({ threadService: services.threads, config }));
+
+    // Tools and embeddings, with their own tighter limit.
+    if (services.capability) {
+      v1.use(
+        capabilityController({
+          capabilityService: services.capability,
+          userKeyService: security.userKeyService,
+          limit: rateLimit({ limiter, rules: rules.capability, subject: "user", metrics }),
+        })
+      );
+    }
     // Behind the same gate: a provider key belongs to an account, so there is
     // no anonymous form of this.
     if (security.userKeyService) {

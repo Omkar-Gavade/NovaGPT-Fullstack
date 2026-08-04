@@ -98,6 +98,9 @@ export class RequirementSet {
     if (attachmentIs("image")) required.vision = true;
     if (attachmentIs("pdf")) required.pdf = true;
     if (request.tools?.length) required.toolCalling = true;
+    // Explicit rather than inferred: an embeddings request carries no content
+    // that would betray it, so nothing else could derive this.
+    if (request.embeddings === true) required.embeddings = true;
     if (request.responseFormat?.type === "json") required.json = true;
     if (request.responseFormat?.type === "json_schema") required.structuredOutput = true;
     if (request.streaming === true) required.streaming = true;

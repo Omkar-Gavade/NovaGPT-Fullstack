@@ -18,6 +18,11 @@ export function serializeMessage(message) {
     pinned: message.pinned,
     finishReason: message.finishReason,
     usage: message.usage,
+    // Only present when the caller asked for structured output. Omitted rather
+    // than null, so a client can distinguish "not requested" from "requested
+    // and empty" without a second field.
+    ...(message.structured ? { structured: message.structured } : {}),
+    ...(message.toolCalls?.length ? { toolCalls: message.toolCalls } : {}),
     // Surfaced deliberately: this is the glass-box material that lets a user
     // see why a model was chosen and what context it received.
     context: message.contextReport,

@@ -75,6 +75,15 @@ export class Message {
     // objects belong in logs, not in every stored message.
     this.contextReport = raw.contextReport ?? null;
     this.routingDecision = raw.routingDecision ?? null;
+    // The parsed, schema-validated value when structured output was requested.
+    // Kept beside the text rather than replacing it: the raw reply is what the
+    // provider actually sent, and a client debugging a schema mismatch needs
+    // both (docs/backend/09-api-design.md).
+    this.structured = raw.structured ?? null;
+    // The model's *intent* to call tools. Never their results — execution is
+    // deliberately out of scope, and the boundary is worth naming here because
+    // this field is exactly where it would erode.
+    this.toolCalls = raw.toolCalls ?? null;
 
     this.createdAt = raw.createdAt ? new Date(raw.createdAt) : new Date();
     this.error = raw.error ?? null;
@@ -123,6 +132,8 @@ export class Message {
       usage: this.usage,
       finishReason: this.finishReason,
       attachments: [...this.attachments],
+      structured: this.structured,
+      toolCalls: this.toolCalls,
       contextReport: this.contextReport,
       routingDecision: this.routingDecision,
       createdAt: this.createdAt.toISOString(),

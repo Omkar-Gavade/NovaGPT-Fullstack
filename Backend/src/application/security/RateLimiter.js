@@ -120,5 +120,22 @@ export function buildRules(config) {
       windowMs: 3_600_000,
       scope: "user",
     }),
+    // Tools and embeddings. Tighter than chat because the provider pools behind
+    // them are smaller, and because an embeddings call batches up to 100 inputs
+    // — one request is not one unit of work.
+    capability: new RateLimitRule({
+      name: "capability_user_minute",
+      limit: config.capabilityPerMinute ?? 10,
+      windowMs: 60_000,
+      scope: "user",
+    }),
+    // Vision draws on the smallest pool of all, and an image is the most
+    // expensive thing a user can send.
+    vision: new RateLimitRule({
+      name: "vision_user_minute",
+      limit: config.visionPerMinute ?? 10,
+      windowMs: 60_000,
+      scope: "user",
+    }),
   };
 }

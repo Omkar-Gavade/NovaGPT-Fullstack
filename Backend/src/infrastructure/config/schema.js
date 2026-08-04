@@ -197,6 +197,12 @@ export const envSchema = z.object({
   RATE_LIMIT_AUTH_PER_MINUTE: z.coerce.number().int().min(1).default(10),
   RATE_LIMIT_CHAT_PER_MINUTE: z.coerce.number().int().min(1).default(20),
   RATE_LIMIT_CHAT_PER_HOUR: z.coerce.number().int().min(1).default(300),
+  // Per capability, and deliberately tighter than chat. The pools serving these
+  // are small — three providers for embeddings, four for vision — so a limit
+  // shared with chat would let ordinary conversation exhaust a capability
+  // nothing else can serve (docs/backend/14-roadmap.md, Phase 9 risks).
+  RATE_LIMIT_CAPABILITY_PER_MINUTE: z.coerce.number().int().min(1).default(10),
+  RATE_LIMIT_VISION_PER_MINUTE: z.coerce.number().int().min(1).default(10),
 
   /* ---- lifecycle ---- */
   // Covers most in-flight requests without making deploys slow. Some long

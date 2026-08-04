@@ -176,6 +176,8 @@ export function loadConfig(source = process.env) {
       authPerMinute: env.RATE_LIMIT_AUTH_PER_MINUTE,
       chatPerMinute: env.RATE_LIMIT_CHAT_PER_MINUTE,
       chatPerHour: env.RATE_LIMIT_CHAT_PER_HOUR,
+      capabilityPerMinute: env.RATE_LIMIT_CAPABILITY_PER_MINUTE,
+      visionPerMinute: env.RATE_LIMIT_VISION_PER_MINUTE,
     }),
 
     shutdown: Object.freeze({

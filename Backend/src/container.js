@@ -29,6 +29,7 @@ import { ChatOrchestrator } from "./application/chat/ChatOrchestrator.js";
 import { StreamRegistry } from "./application/chat/StreamRegistry.js";
 import { ThreadService } from "./application/threads/ThreadService.js";
 import { CatalogService } from "./application/catalog/CatalogService.js";
+import { CapabilityService } from "./application/capability/CapabilityService.js";
 import { costTable } from "./infrastructure/providers/catalog/CostTable.js";
 import { JwtSigner } from "./infrastructure/security/JwtSigner.js";
 import { Argon2Hasher } from "./infrastructure/security/Argon2Hasher.js";
@@ -419,6 +420,10 @@ export function buildContainer(config) {
       attachments: attachmentIngestor,
     }),
     threads: new ThreadService({ threads: threadRepository, clock, logger }),
+    // Tools and embeddings, over the same router and executor as chat so they
+    // inherit ranking, failover, retry and usage accounting rather than
+    // reimplementing weaker copies of each.
+    capability: new CapabilityService({ routingService, routingExecutor, logger, metrics }),
     catalog: new CatalogService({
       modelRegistry,
       providerRegistry,
