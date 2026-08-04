@@ -1,0 +1,164 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "./styles/design.css";
+@import "./styles/landing.css";
+@import "./styles/auth.css";
+@import "./styles/chat-ui.css";
+
+/* =========================================================================
+   Chat design tokens (dark only) — the single source of truth for the premium
+   chat surface. Registered with Tailwind v4 so utilities like `bg-app`,
+   `text-primary`, `border-line` exist. No component hardcodes a colour.
+   ========================================================================= */
+@theme {
+  --color-app: #212121;        /* main chat background */
+  --color-surface: #171717;    /* sidebar / rails */
+  --color-elevated: #303030;   /* composer, user bubble, menus */
+  --color-raised: #2f2f2f;     /* code header, chips */
+  --color-hover: #2a2a2a;      /* hover fills */
+  --color-active: #3a3a3a;     /* pressed / active fills */
+  --color-line: #ffffff17;     /* hairline borders (~9%) */
+  --color-line-strong: #ffffff2b;
+
+  --color-primary: #ececec;    /* primary text */
+  --color-secondary: #b4b4b4;  /* secondary text */
+  --color-tertiary: #8f8f8f;   /* muted text / icons */
+
+  --color-accent: #7c6bf0;
+  --color-accent-soft: #7c6bf026;
+  --color-danger: #f87171;
+  --color-success: #3fb950;
+
+  --radius-composer: 1.75rem;  /* 28px */
+}
+
+/* base layout */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+/* LIGHT MODE (fallback) */
+body {
+  background-color: white;
+  color: black;
+  font-family: 'Geist Variable', sans-serif;
+}
+
+/* DARK MODE (fallback) */
+.dark body {
+  background-color: #020617;
+  color: white;
+}
+
+@layer base {
+  .theme {
+    --font-heading: var(--font-sans);
+    --font-sans: 'Geist Variable', sans-serif;
+  }
+
+  :root {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+
+    --destructive: oklch(0.577 0.245 27.325);
+
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: oklch(0.145 0 0);
+    --foreground: oklch(0.985 0 0);
+
+    --card: oklch(0.205 0 0);
+    --card-foreground: oklch(0.985 0 0);
+
+    --popover: oklch(0.205 0 0);
+    --popover-foreground: oklch(0.985 0 0);
+
+    --primary: oklch(0.922 0 0);
+    --primary-foreground: oklch(0.205 0 0);
+
+    --secondary: oklch(0.269 0 0);
+    --secondary-foreground: oklch(0.985 0 0);
+
+    --muted: oklch(0.269 0 0);
+    --muted-foreground: oklch(0.708 0 0);
+
+    --accent: oklch(0.269 0 0);
+    --accent-foreground: oklch(0.985 0 0);
+
+    --destructive: oklch(0.704 0.191 22.216);
+
+    --border: oklch(1 0 0 / 10%);
+    --input: oklch(1 0 0 / 15%);
+    --ring: oklch(0.556 0 0);
+  }
+
+  /* ⚠️ DO NOT USE @apply WITH CUSTOM TOKENS */
+  * {
+    outline-color: hsl(var(--ring) / 0.5);
+  }
+
+  html {
+    font-family: 'Geist Variable', sans-serif;
+  }
+}
+
+/* ── Session restore ──────────────────────────────────────────────────────
+   Shown while the refresh cookie is being exchanged on load. It exists so a
+   returning user does not see the sign-in page flash past before landing where
+   they were going. */
+.auth-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.9rem;
+  min-height: 100dvh;
+  color: var(--muted-foreground, #8a8a8a);
+  font-size: 0.9rem;
+}
+
+.auth-gate__spinner {
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: auth-gate-spin 0.7s linear infinite;
+  opacity: 0.55;
+}
+
+@keyframes auth-gate-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* A spinner that never stops is noise for anyone who set this preference. */
+@media (prefers-reduced-motion: reduce) {
+  .auth-gate__spinner { animation-duration: 2.4s; }
+}
