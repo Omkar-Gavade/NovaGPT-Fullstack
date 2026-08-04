@@ -208,6 +208,22 @@ const DEFINITIONS = [
     labels: ["decision", "reason"],
   },
 
+  /* ---- attachments (docs/backend/09-api-design.md) ---- */
+  {
+    name: "nova_attachments_total",
+    type: "counter",
+    help: "Attachments accepted, by kind and how they arrived.",
+    // `source` separates inline uploads from fetched URLs, which have very
+    // different risk profiles — a rise in `url` is the SSRF surface being used.
+    labels: ["kind", "source"],
+  },
+  {
+    name: "nova_attachments_rejected_total",
+    type: "counter",
+    help: "Attachments refused, by reason.",
+    labels: ["reason"],
+  },
+
   /* ---- security (docs/backend/10-security.md) ---- */
   {
     name: "nova_auth_events_total",
