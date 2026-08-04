@@ -392,6 +392,12 @@ function toParts(content) {
       if (typeof part === "string") return { text: part };
       if (part.text || part.inlineData) return part; // already Gemini-shaped
       if (part.type === "text") return { text: part.text };
+      // Native PDF. Gemini is the only provider in the fleet that declares
+      // `pdf`, and routing filters on that capability before a request gets
+      // here — so this part never reaches an adapter that cannot read it.
+      if (part.type === "file") {
+        return { inlineData: { mimeType: part.file?.mime, data: part.file?.data } };
+      }
       if (part.type === "image_url") {
         // OpenAI-dialect image parts arrive as data URLs from shared callers.
         const url = part.image_url?.url ?? "";

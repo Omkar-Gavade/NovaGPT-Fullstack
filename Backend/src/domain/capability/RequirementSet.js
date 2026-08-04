@@ -84,8 +84,19 @@ export class RequirementSet {
    */
   static from(request = {}, registry = capabilityRegistry) {
     const required = {};
-    if (request.attachments?.some((a) => a.type === "image")) required.vision = true;
-    if (request.attachments?.some((a) => a.type === "pdf")) required.pdf = true;
+
+    // `vision` and `pdf` may arrive already derived, from the message content
+    // itself. That is the authoritative source: `type` on an attachment is the
+    // *client's claim*, while `kind` is what the bytes were sniffed to be, and
+    // a request must not reach a text-only model by mislabelling its own images
+    // (docs/backend/10-security.md#input-validation).
+    if (request.vision === true) required.vision = true;
+    if (request.pdf === true) required.pdf = true;
+
+    const attachmentIs = (value) =>
+      request.attachments?.some((a) => a.kind === value || a.type === value);
+    if (attachmentIs("image")) required.vision = true;
+    if (attachmentIs("pdf")) required.pdf = true;
     if (request.tools?.length) required.toolCalling = true;
     if (request.responseFormat?.type === "json") required.json = true;
     if (request.responseFormat?.type === "json_schema") required.structuredOutput = true;

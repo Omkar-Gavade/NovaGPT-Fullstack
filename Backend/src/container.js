@@ -51,6 +51,8 @@ import { InMemoryUsageRepository } from "./infrastructure/persistence/memory/InM
 import { UsageRecorder } from "./application/usage/UsageRecorder.js";
 import { PromotionService } from "./application/providers/PromotionService.js";
 import { UserKeyService } from "./application/identity/UserKeyService.js";
+import { AttachmentPolicy } from "./domain/attachment/AttachmentPolicy.js";
+import { AttachmentIngestor } from "./application/attachment/AttachmentIngestor.js";
 import { MongoUserKeyRepository } from "./infrastructure/persistence/mongo/MongoUserKeyRepository.js";
 import { InMemoryUserKeyRepository } from "./infrastructure/persistence/memory/InMemoryUserKeyRepository.js";
 import { Tracer, LogSpanExporter, nullTracer } from "./infrastructure/telemetry/Tracer.js";
@@ -371,6 +373,20 @@ export function buildContainer(config) {
     });
   }
 
+  const attachmentIngestor = new AttachmentIngestor({
+    policy: new AttachmentPolicy(config.attachments),
+    logger,
+    metrics,
+    timeoutMs: config.attachments.fetchTimeoutMs,
+  });
+
+  if (config.attachments.allowedHosts.length === 0) {
+    logger.info("attachments.url_fetching_disabled", {
+      reason: "ATTACHMENT_ALLOWED_HOSTS is empty",
+      impact: "inline uploads still work; attachments by URL are refused",
+    });
+  }
+
   const security = {
     tokenService,
     authService,
@@ -400,6 +416,7 @@ export function buildContainer(config) {
       tracer,
       logContent: config.log.content,
       userKeys: userKeyService,
+      attachments: attachmentIngestor,
     }),
     threads: new ThreadService({ threads: threadRepository, clock, logger }),
     catalog: new CatalogService({

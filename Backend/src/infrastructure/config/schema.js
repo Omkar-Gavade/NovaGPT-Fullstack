@@ -75,6 +75,20 @@ export const envSchema = z.object({
   // (docs/backend/11-observability.md#what-is-never-logged).
   LOG_CONTENT: bool.default(false),
 
+  /* ---- attachments (docs/backend/10-security.md#input-validation) ---- */
+  // Comma-separated hosts an attachment URL may point at. `*.cdn.example.com`
+  // matches subdomains, on a label boundary.
+  //
+  // **Empty means URL attachments are off**, which is the correct default: an
+  // endpoint that fetches a user-supplied URL is a request-forgery primitive,
+  // and a deployment that has not decided which hosts it trusts should not be
+  // fetching arbitrary ones. Inline base64 uploads are unaffected.
+  ATTACHMENT_ALLOWED_HOSTS: z.string().optional(),
+  ATTACHMENT_MAX_BYTES: z.coerce.number().int().positive().default(8 * 1024 * 1024),
+  ATTACHMENT_MAX_COUNT: z.coerce.number().int().min(1).max(50).default(10),
+  ATTACHMENT_MAX_TOTAL_BYTES: z.coerce.number().int().positive().default(24 * 1024 * 1024),
+  ATTACHMENT_FETCH_TIMEOUT_MS: duration.default(10_000),
+
   /* ---- tracing (docs/backend/11-observability.md#tracing) ---- */
   TRACING_ENABLED: bool.default(true),
   // The fraction of *ordinary successful* requests kept. Errors, failovers and

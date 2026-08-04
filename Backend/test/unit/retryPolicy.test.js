@@ -240,3 +240,47 @@ describe("RetryPolicy — a rate limit with somewhere else to go", () => {
     assert.equal(next.action, RetryDecision.RETRY);
   });
 });
+
+describe("RetryPolicy — an attempt is reserved for failover", () => {
+  // The defaults made failover unreachable: with maxAttempts 3 and
+  // maxRetriesPerProvider 2, a provider failing every attempt took all three
+  // and the request surfaced "attempt budget exhausted" without ever trying the
+  // healthy provider beside it. The fleet's whole premise is that one provider
+  // going down is a non-event, and it was not.
+  const policy = new RetryPolicy({ maxRetriesPerProvider: 2, maxAttempts: 3 });
+  const outage = () => new ProviderError("down", FailureKind.OUTAGE, { provider: "a" });
+
+  const decide = (attemptsUsed, retriesOnCurrent, hasAlternative) =>
+    policy.next({
+      error: outage(),
+      attemptsUsed,
+      retriesOnCurrent,
+      hasAlternative,
+      switchPolicy: SwitchPolicy.AUTO,
+      remainingBudgetMs: 60_000,
+    }).action;
+
+  test("retries once, then moves on while an attempt remains", () => {
+    assert.equal(decide(1, 0, true), RetryDecision.RETRY);
+    assert.equal(decide(2, 1, true), RetryDecision.FAILOVER);
+  });
+
+  test("uses the whole budget in place when there is nowhere else to go", () => {
+    // The reservation must not cost a retry that had nothing to make room for.
+    assert.equal(decide(1, 0, false), RetryDecision.RETRY);
+    assert.equal(decide(2, 1, false), RetryDecision.RETRY);
+  });
+
+  test("a single-attempt budget still fails over rather than retrying", () => {
+    const tight = new RetryPolicy({ maxRetriesPerProvider: 2, maxAttempts: 2 });
+    const action = tight.next({
+      error: outage(),
+      attemptsUsed: 1,
+      retriesOnCurrent: 0,
+      hasAlternative: true,
+      switchPolicy: SwitchPolicy.AUTO,
+      remainingBudgetMs: 60_000,
+    }).action;
+    assert.equal(action, RetryDecision.FAILOVER);
+  });
+});

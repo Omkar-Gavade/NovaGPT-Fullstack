@@ -94,6 +94,14 @@ export function loadConfig(source = process.env) {
       keyPrefix: env.REDIS_KEY_PREFIX,
     }),
 
+    attachments: Object.freeze({
+      allowedHosts: parseList(env.ATTACHMENT_ALLOWED_HOSTS) ?? [],
+      maxBytes: env.ATTACHMENT_MAX_BYTES,
+      maxCount: env.ATTACHMENT_MAX_COUNT,
+      maxTotalBytes: env.ATTACHMENT_MAX_TOTAL_BYTES,
+      fetchTimeoutMs: env.ATTACHMENT_FETCH_TIMEOUT_MS,
+    }),
+
     tracing: Object.freeze({
       enabled: env.TRACING_ENABLED,
       sampleRate: env.TRACE_SAMPLE_RATE,

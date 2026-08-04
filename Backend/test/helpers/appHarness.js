@@ -38,6 +38,8 @@ import { FastHasher } from "./fastHasher.js";
 import { InMemoryUserKeyRepository } from "../../src/infrastructure/persistence/memory/InMemoryUserKeyRepository.js";
 import { UserKeyService } from "../../src/application/identity/UserKeyService.js";
 import { EnvelopeCipher } from "../../src/infrastructure/security/EnvelopeCipher.js";
+import { AttachmentPolicy } from "../../src/domain/attachment/AttachmentPolicy.js";
+import { AttachmentIngestor } from "../../src/application/attachment/AttachmentIngestor.js";
 import { InMemoryUsageRepository } from "../../src/infrastructure/persistence/memory/InMemoryUsageRepository.js";
 import { UsageRecorder } from "../../src/application/usage/UsageRecorder.js";
 import { Tracer, LogSpanExporter } from "../../src/infrastructure/telemetry/Tracer.js";
@@ -236,6 +238,11 @@ export async function startApp({
       tracer,
       logContent: config.log.content === true,
       userKeys: userKeyService,
+      attachments: new AttachmentIngestor({
+        policy: new AttachmentPolicy(config.attachments),
+        logger,
+        metrics,
+      }),
     }),
     threads: new ThreadService({ threads, clock, logger }),
     catalog: new CatalogService({ modelRegistry, providerRegistry, costTable }),

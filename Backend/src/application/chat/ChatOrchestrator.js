@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { enrichContext } from "../../infrastructure/telemetry/traceContext.js";
 import { nullTracer } from "../../infrastructure/telemetry/Tracer.js";
 import { Thread, Message, Role, FinishReason } from "../../domain/conversation/Thread.js";
+import {
+  buildContent,
+  requirementsOfContent,
+  withoutPayloads,
+} from "../../domain/conversation/MessageContent.js";
 import { ContextEngine } from "../../domain/context/ContextEngine.js";
 import { CalibratedTokenEstimator } from "../../domain/context/TokenEstimator.js";
 import { StreamEventType } from "../../domain/streaming/StreamEvent.js";
@@ -46,6 +51,7 @@ export class ChatOrchestrator {
     tracer = nullTracer,
     logContent = false,
     userKeys = null,
+    attachments = null,
   }) {
     this.tracer = tracer;
     // Off unless an operator turned it on, and that decision is audited at
@@ -56,6 +62,9 @@ export class ChatOrchestrator {
     // BYOK. Null when the deployment has no encryption key configured, in which
     // case every request runs on the platform credential.
     this.userKeys = userKeys;
+    // Null when attachments are not enabled. Ingestion validates before any
+    // byte reaches a message, so this must run *before* content is built.
+    this.attachments = attachments;
     this.threads = threads;
     this.routingService = routingService;
     this.routingExecutor = routingExecutor;
@@ -363,13 +372,25 @@ export class ChatOrchestrator {
     enrichContext({ threadId: thread.id });
     const settings = thread.settings.merge(command.settings ?? {});
 
+    // Ingested first: sniffed, size-capped and — for URLs — fetched through the
+    // SSRF policy. Nothing downstream ever sees an unvalidated attachment
+    // (docs/backend/10-security.md#input-validation).
+    const ingested = command.attachments?.length
+      ? await this.tracer.span("attachments.ingest", () =>
+          this.attachments.ingest(command.attachments, { signal: command.signal })
+        )
+      : [];
+
     const userMessage =
       command.userMessage ??
       new Message({
         id: randomUUID(),
         role: Role.USER,
-        content: command.message,
-        attachments: command.attachments ?? [],
+        // Multimodal content, in the canonical shape every adapter maps from.
+        // Plain text when there are no attachments, so the common path is
+        // unchanged.
+        content: buildContent(command.message, ingested),
+        attachments: ingested.map((a) => ({ kind: a.kind, mime: a.mime, bytes: a.bytes })),
       });
 
     const history = thread.messages;
@@ -381,7 +402,13 @@ export class ChatOrchestrator {
       const decided = this.routingService.route({
         model: settings.model,
         streaming: Boolean(command.streaming),
+        // Derived from the **content**, not from what the client labelled its
+        // own attachments. A request cannot reach a text-only model by
+        // mislabelling its own images.
+        ...requirementsOfContent(userMessage.content),
         attachments: userMessage.attachments,
+        tools: command.tools,
+        responseFormat: command.responseFormat,
         maxTokens: settings.maxTokens,
         estimatedPromptTokens: thread.totalTokens,
       });
@@ -463,8 +490,19 @@ export class ChatOrchestrator {
   async #persist(prepared, assistantMessage, usage, report) {
     const { thread, userMessage, engine } = prepared;
 
+    // **Binary payloads are stripped before the thread is written.**
+    //
+    // Storing base64 images would push a conversation past the BSON document
+    // limit within a handful of turns, and — worse — the context engine would
+    // re-send those bytes to the provider on *every* subsequent message,
+    // re-uploading the same image indefinitely. The shape is kept so the UI can
+    // still show that an image was sent (docs/backend/08-storage.md).
+    const storedUserMessage = userMessage.with({
+      content: withoutPayloads(userMessage.content),
+    });
+
     let next = thread
-      .appendUserMessage(userMessage)
+      .appendUserMessage(storedUserMessage)
       .appendAssistantMessage(assistantMessage);
 
     if (usage?.promptTokens && report.estimatedTokens > 0) {

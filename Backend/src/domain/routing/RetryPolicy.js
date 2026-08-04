@@ -121,11 +121,25 @@ export class RetryPolicy {
     // multi-provider premise (docs/backend/12-testing.md#chaos-exercises).
     const shouldWaitHereAnyway = !(kindOf(error) === FailureKind.RATE_LIMIT && hasAlternative);
 
+    // **One attempt is reserved for somewhere else, whenever there is a
+    // somewhere else.**
+    //
+    // Without this, the defaults make failover unreachable: with
+    // `maxAttempts: 3` and `maxRetriesPerProvider: 2`, a provider that fails
+    // consistently takes attempts 1, 2 and 3 — and the request surfaces
+    // "attempt budget exhausted" having never tried the healthy provider
+    // sitting idle beside it. The fleet's entire premise is that one provider
+    // going down is a non-event, and it was not.
+    //
+    // Found by the vision failover test in Phase 12, which is the first test to
+    // script a provider that fails *every* attempt rather than one.
+    const budgetForThisProvider = hasAlternative ? this.maxAttempts - 1 : this.maxAttempts;
+
     const canRetryHere =
       this.isRetryable(error) &&
       shouldWaitHereAnyway &&
       retriesOnCurrent < this.maxRetriesPerProvider &&
-      attemptsUsed < this.maxAttempts &&
+      attemptsUsed < budgetForThisProvider &&
       !contentAlreadySent;
 
     if (canRetryHere) {
